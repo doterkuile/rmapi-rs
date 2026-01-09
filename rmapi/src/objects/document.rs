@@ -4,13 +4,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum DocumentType {
+    #[default]
     Document,
     Collection,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Document {
     #[serde(rename = "ID")]
     pub id: Uuid,

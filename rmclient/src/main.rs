@@ -1,17 +1,16 @@
 use clap::Parser;
 use std::path::Path;
 
-use dirs::cache_dir;
+use dirs::config_dir;
 use rmapi::Client;
 use std::path::PathBuf;
 
 mod rmclient;
 use crate::rmclient::commands::Commands;
 use crate::rmclient::error::Error;
-use tokio::fs::File;
 
 pub fn default_token_file_path() -> PathBuf {
-    cache_dir()
+    config_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("rmapi/auth_token")
 }
@@ -22,6 +21,7 @@ struct Args {
     #[arg(
         short = 't',
         long = "auth-token-file",
+        env = "RMAPI_AUTH_TOKEN_FILE",
         help = "Path to the file that holds a previously generated session token",
         default_value = default_token_file_path().into_os_string()
     )]
@@ -33,7 +33,7 @@ struct Args {
 
 async fn write_token_file(auth_token: &str, auth_token_file: &Path) -> Result<(), Error> {
     if let Some(parent) = auth_token_file.parent() {
-        log::debug!("Making client cache dir {:?}", parent);
+        log::debug!("Making client config dir {:?}", parent);
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(auth_token_file, auth_token).await?;
@@ -65,10 +65,17 @@ async fn client_from_token_file(auth_token_file: &Path) -> Result<Client, Error>
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() {
     env_logger::init();
     let args = Args::parse();
 
+    if let Err(err) = run(args).await {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    }
+}
+
+async fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Commands::Register { code } => {
             let client = Client::new(&code).await?;
@@ -78,20 +85,28 @@ async fn main() -> Result<(), Error> {
                 args.auth_token_file
             );
         }
-        Commands::Ls => {
-            let client = client_from_token_file(&args.auth_token_file).await?;
-            let files = client.list_files().await?;
-            for file in files {
-                println!("{} (ID: {})", file.display_name, file.id);
+        Commands::Ls { path } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            let _ = client.list_files().await?; // Populate tree/cache
+            let target_path = path.as_deref().unwrap_or("/");
+            let entries = client
+                .filesystem
+                .list_dir(target_path)
+                .map_err(|e| Error::Rmapi(e))?;
+
+            for node in entries {
+                let suffix = if node.is_directory() { "/" } else { "" };
+                println!("{}{}\t(ID: {})", node.name(), suffix, node.id());
             }
         }
-        Commands::Upload { file_path } => {
+        Commands::Shell => {
             let client = client_from_token_file(&args.auth_token_file).await?;
-            let file = File::open(&file_path).await?;
-            client.upload_file(file).await?;
-            println!("File {:?} uploaded successfully!", file_path);
+            let mut shell = crate::rmclient::shell::Shell::new(client);
+            shell.run().await?;
+        }
+        Commands::Upload { file_path: _ } => {
+            println!("Upload is currently not implemented for Sync V4");
         }
     }
-
     Ok(())
 }

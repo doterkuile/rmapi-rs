@@ -9,7 +9,12 @@ pub enum Commands {
         code: String,
     },
     /// List files in the reMarkable Cloud
-    Ls,
+    Ls {
+        /// Optional path to list
+        path: Option<String>,
+    },
+    /// Start interactive shell
+    Shell,
     /// Upload a file to the reMarkable Cloud
     Upload {
         /// Path to the file to upload

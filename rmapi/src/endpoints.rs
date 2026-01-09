@@ -25,8 +25,34 @@ const STORAGE_DISCOVERY_API_VERSION: &str = "2";
 pub const STORAGE_API_URL_ROOT: &str = "https://internal.cloud.remarkable.com";
 pub const WEBAPP_API_URL_ROOT: &str = "https://web.eu.tectonic.remarkable.com";
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct V4Metadata {
+    #[serde(rename = "visibleName")]
+    pub visible_name: Option<String>,
+    #[serde(rename = "type")]
+    pub doc_type: Option<String>,
+    pub parent: Option<String>,
+    #[serde(rename = "lastModified")]
+    pub last_modified: Option<String>,
+    pub version: Option<u64>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct V4Entry {
+    hash: String,
+    doc_type: String,
+    doc_id: String,
+    subfiles: u32,
+    size: u64,
+}
+
 const DOC_UPLOAD_ENDPOINT: &str = "doc/v2/files";
-const ROOT_SYNC_ENDPOINT: &str = "sync/v4/root";
+pub const ROOT_SYNC_ENDPOINT: &str = "sync/v4/root";
 // const FILE_SYNC_ENDPOINT: &str = "sync/v3/files";
 
 // const ITEM_LIST_ENDPOINT: &str = "document-storage/json/2/docs";
@@ -152,7 +178,7 @@ struct StorageInfo {
 pub async fn discover_storage(auth_token: &str) -> Result<String, Error> {
     log::info!("Discovering storage host");
     let discovery_request = vec![
-        ("enviorment", "production"),
+        ("environment", "production"),
         ("group", GROUP_AUTH),
         ("apiVer", STORAGE_DISCOVERY_API_VERSION),
     ];
@@ -292,30 +318,164 @@ pub async fn upload_file(_: &str, auth_token: &str, file: File) -> Result<String
     }
 }
 
-pub async fn get_files(_: &str, auth_token: &str) -> Result<Vec<crate::objects::Document>, Error> {
-    log::info!("Requesting files on the rmCloud");
+pub async fn get_files(
+    _storage_url: &str, // Ignored because Sync V4 needs internal host
+    auth_token: &str,
+) -> Result<(Vec<crate::objects::Document>, String), Error> {
+    log::info!("Requesting files version Sync V4");
 
     let client = reqwest::Client::new();
-    let response = client
-        .get(format!("{}/{}", WEBAPP_API_URL_ROOT, DOC_UPLOAD_ENDPOINT))
+
+    // 1. Get the root hash
+    let root_hash_response = client
+        .get(format!("{}/{}", STORAGE_API_URL_ROOT, ROOT_SYNC_ENDPOINT))
         .bearer_auth(auth_token)
         .header("Accept", "application/json")
-        .header("rm-Source", "WebLibrary")
-        .header("Content-Type", "application/pdf")
+        .header("rm-filename", "roothash")
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
-    log::debug!("{:?}", response);
+    let root_resp_text = root_hash_response.text().await?;
+    log::debug!("Root response: {}", root_resp_text);
 
-    match response.error_for_status() {
-        Ok(res) => {
-            let files = res.json::<Vec<crate::objects::Document>>().await?;
-            log::debug!("Get files request response: {:?}", files);
-            Ok(files)
+    // Parse the root response which is JSON in V4
+    let root_info: serde_json::Value = serde_json::from_str(&root_resp_text).map_err(|e| {
+        log::error!("Failed to parse root JSON: {}", e);
+        Error::from(e)
+    })?;
+
+    let root_hash = root_info["hash"]
+        .as_str()
+        .ok_or_else(|| {
+            log::error!("Missing hash in root info");
+            Error::Message("Missing hash in root info".to_string())
+        })?
+        .to_string();
+
+    // 2. Fetch the root index blob
+    let root_blob_response = client
+        .get(format!(
+            "{}/sync/v3/files/{}",
+            STORAGE_API_URL_ROOT, root_hash
+        ))
+        .bearer_auth(auth_token)
+        .header("rm-filename", "roothash")
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let root_blob_text = root_blob_response.text().await?;
+
+    // 3. Parse root index
+    let mut entries = Vec::new();
+    for line in root_blob_text.lines().skip(1) {
+        // Skip schema version line
+        if line.is_empty() {
+            continue;
         }
-        Err(e) => {
-            log::error!("Error listing items: {}", e);
-            Err(Error::from(e))
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+
+        entries.push(V4Entry {
+            hash: parts[0].to_string(),
+            doc_type: parts[1].to_string(),
+            doc_id: parts[2].to_string(),
+            subfiles: parts[3].parse().unwrap_or(0),
+            size: parts[4].parse().unwrap_or(0),
+        });
+    }
+
+    // 4. Concurrently fetch metadata for all entries
+    let mut tasks = Vec::new();
+    let auth_token = auth_token.to_string();
+    let client = client.clone();
+
+    for entry in entries {
+        let auth_token = auth_token.clone();
+        let client = client.clone();
+        tasks.push(tokio::spawn(async move {
+            // Fetch .docSchema to find .metadata hash
+            let doc_schema_response = client
+                .get(format!(
+                    "{}/sync/v3/files/{}",
+                    STORAGE_API_URL_ROOT, entry.hash
+                ))
+                .bearer_auth(&auth_token)
+                .header("rm-filename", format!("{}.docSchema", entry.doc_id))
+                .send()
+                .await;
+
+            let doc_schema_response = match doc_schema_response {
+                Ok(r) if r.status().is_success() => r,
+                _ => return None,
+            };
+
+            let doc_schema_text = doc_schema_response.text().await.ok()?;
+            let mut metadata_hash = None;
+            for subline in doc_schema_text.lines().skip(1) {
+                if subline.contains(".metadata") {
+                    let subparts: Vec<&str> = subline.split(':').collect();
+                    if subparts.len() >= 1 {
+                        metadata_hash = Some(subparts[0].to_string());
+                        break;
+                    }
+                }
+            }
+
+            let m_hash = metadata_hash?;
+            let metadata_response = client
+                .get(format!("{}/sync/v3/files/{}", STORAGE_API_URL_ROOT, m_hash))
+                .bearer_auth(&auth_token)
+                .header("rm-filename", format!("{}.metadata", entry.doc_id))
+                .send()
+                .await
+                .ok()?;
+
+            if !metadata_response.status().is_success() {
+                return None;
+            }
+
+            let m_body = metadata_response.text().await.ok()?;
+            let metadata_json: V4Metadata = serde_json::from_str(&m_body).ok()?;
+
+            if metadata_json.deleted {
+                return None;
+            }
+
+            Some(crate::objects::Document {
+                id: Uuid::parse_str(&entry.doc_id).unwrap_or(Uuid::nil()),
+                version: metadata_json.version.unwrap_or(0),
+                message: String::new(),
+                success: true,
+                blob_url_get: String::new(),
+                blob_url_put: String::new(),
+                blob_url_put_expires: chrono::Utc::now(),
+                last_modified: chrono::Utc::now(),
+                doc_type: if metadata_json.doc_type.as_deref().unwrap_or("") == "CollectionType" {
+                    crate::objects::DocumentType::Collection
+                } else {
+                    crate::objects::DocumentType::Document
+                },
+                display_name: metadata_json
+                    .visible_name
+                    .unwrap_or_else(|| "Unknown".to_string()),
+                current_page: 0,
+                bookmarked: metadata_json.pinned,
+                parent: metadata_json.parent.unwrap_or_default(),
+            })
+        }));
+    }
+
+    let results = futures::future::join_all(tasks).await;
+    let mut documents = Vec::new();
+    for res in results {
+        if let Ok(Some(doc)) = res {
+            documents.push(doc);
         }
     }
+
+    Ok((documents, root_hash))
 }
