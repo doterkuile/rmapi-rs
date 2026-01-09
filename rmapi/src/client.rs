@@ -143,6 +143,8 @@ impl Client {
     //         .await?;
 
     //     let document: Document = response.json().await?;
-    //     return Ok(document);
-    // }
+    pub async fn list_files(&self) -> Result<Vec<crate::objects::Document>, Error> {
+        log::debug!("Listing files in the cloud");
+        endpoints::get_files(&self.storage_url, &self.auth_token).await
+    }
 }

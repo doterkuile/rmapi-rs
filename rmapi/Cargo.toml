@@ -14,15 +14,19 @@ repository.workspace = true
 
 
 [dependencies]
-reqwest = { version = "0.12", features = ["json", "stream"] }
-log = "0.4.14"
-uuid = { version = "1.10.0", features = [
-    "v4",
-    "fast-rng",
-    "macro-diagnostics",
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "json",
+    "stream",
+    "query",
 ] }
+log = "0.4.14"
+uuid = { version = "1.10.0", features = ["v4", "fast-rng", "serde"] }
+
 serde_json = "1.0.128"
 serde = { version = "1.0.210", features = ["derive"] }
 const_format = "0.2.33"
 tokio = { version = "1.40.0", features = ["fs"] }
 tokio-util = { version = "0.7.12", features = ["codec"] }
+chrono = { version = "0.4.38", features = ["serde"] }
+dirs = "6.0.0"

@@ -27,13 +27,13 @@ pub const WEBAPP_API_URL_ROOT: &str = "https://web.eu.tectonic.remarkable.com";
 
 const DOC_UPLOAD_ENDPOINT: &str = "doc/v2/files";
 const ROOT_SYNC_ENDPOINT: &str = "sync/v4/root";
-const FILE_SYNC_ENDPOINT: &str = "sync/v3/files";
+// const FILE_SYNC_ENDPOINT: &str = "sync/v3/files";
 
-const ITEM_LIST_ENDPOINT: &str = "document-storage/json/2/docs";
-const ITEM_ENDPOINT: &str = "document-storage/json/2/";
-const UPLOAD_REQUEST_ENDPOINT: &str = "document-storage/json/2/upload/request";
-const UPLOAD_STATUS_ENDPOINT: &str = "document-storage/json/2/upload/update-status";
-//const DELETE_ENDPOINT: &str = "/document-storage/json/2/delete";
+// const ITEM_LIST_ENDPOINT: &str = "document-storage/json/2/docs";
+// const ITEM_ENDPOINT: &str = "document-storage/json/2/";
+// const UPLOAD_REQUEST_ENDPOINT: &str = "document-storage/json/2/upload/request";
+// const UPLOAD_STATUS_ENDPOINT: &str = "document-storage/json/2/upload/update-status";
+// const DELETE_ENDPOINT: &str = "/document-storage/json/2/delete";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(non_snake_case)]
@@ -271,10 +271,7 @@ pub async fn upload_file(_: &str, auth_token: &str, file: File) -> Result<String
         .bearer_auth(auth_token)
         .header("Accept-Encoding", "gzip, deflate, br")
         .header("rm-Source", "WebLibrary")
-        .header(
-            "rm-Meta",
-            ""
-        )
+        .header("rm-Meta", "")
         .header("Content-Type", "application/pdf")
         .body(body)
         .send()
@@ -295,7 +292,7 @@ pub async fn upload_file(_: &str, auth_token: &str, file: File) -> Result<String
     }
 }
 
-pub async fn get_files(_: &str, auth_token: &str) -> Result<String, Error> {
+pub async fn get_files(_: &str, auth_token: &str) -> Result<Vec<crate::objects::Document>, Error> {
     log::info!("Requesting files on the rmCloud");
 
     let client = reqwest::Client::new();
@@ -312,9 +309,9 @@ pub async fn get_files(_: &str, auth_token: &str) -> Result<String, Error> {
 
     match response.error_for_status() {
         Ok(res) => {
-            let upload_request_resp = res.text().await?;
-            log::debug!("Get files request response: {}", upload_request_resp);
-            Ok(upload_request_resp)
+            let files = res.json::<Vec<crate::objects::Document>>().await?;
+            log::debug!("Get files request response: {:?}", files);
+            Ok(files)
         }
         Err(e) => {
             log::error!("Error listing items: {}", e);
