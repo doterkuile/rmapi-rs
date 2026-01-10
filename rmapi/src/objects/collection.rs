@@ -1,5 +1,3 @@
-use crate::error::Error;
-use crate::objects::remarkable_object::RemarkableObject;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -18,10 +16,4 @@ pub struct Collection {
     pub last_modified: DateTime<Utc>,
     #[serde(rename = "Parent")]
     pub parent: String,
-}
-
-impl RemarkableObject for Collection {
-    fn register_client(_: String) -> Result<String, Error> {
-        unimplemented!()
-    }
 }

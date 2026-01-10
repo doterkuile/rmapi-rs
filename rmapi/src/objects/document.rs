@@ -1,5 +1,3 @@
-use crate::error::Error;
-use crate::objects::remarkable_object::RemarkableObject;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,10 +37,4 @@ pub struct Document {
     pub bookmarked: bool,
     #[serde(rename = "Parent")]
     pub parent: String,
-}
-
-impl RemarkableObject for Document {
-    fn register_client(_: String) -> Result<String, Error> {
-        unimplemented!()
-    }
 }
