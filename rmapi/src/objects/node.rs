@@ -46,19 +46,27 @@ impl FileTree {
         }
     }
 
-    pub fn build(documents: Vec<Document>) -> Self {
-        let mut tree = Self::new();
-
-        // Add special "trash" node
+    pub fn add_trash_node(&mut self) {
+        // The reMarkable API uses the literal string "trash" as the parent ID for deleted items.
+        // We use "trash" as the lookup key in our children map so items can find their parent.
         let trash_id = "trash";
+
+        // However, we give the node a unique virtual UUID internally.
+        // This prevents ID collisions with the Root node (which uses the nil UUID)
+        // when performing recursive searches like `find_node_mut`.
         let trash_node = Node::new(Document {
-            id: uuid::Uuid::nil(), // dummy
+            id: uuid::Uuid::parse_str("de000000-0000-0000-0000-000000000000").unwrap(),
             display_name: "trash".to_string(),
             doc_type: DocumentType::Collection,
             parent: "".to_string(),
             ..Default::default()
         });
-        tree.root.children.insert(trash_id.to_string(), trash_node);
+        self.root.children.insert(trash_id.to_string(), trash_node);
+    }
+
+    pub fn build(documents: Vec<Document>) -> Self {
+        let mut tree = Self::new();
+        tree.add_trash_node();
 
         let mut id_to_node: HashMap<String, Node> = documents
             .into_iter()
