@@ -27,15 +27,11 @@ enum ShellCommand {
 
 pub struct Shell {
     client: Client,
-    current_path: String,
 }
 
 impl Shell {
     pub fn new(client: Client) -> Self {
-        Shell {
-            client,
-            current_path: "/".to_string(),
-        }
+        Shell { client }
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -47,7 +43,7 @@ impl Shell {
             DefaultEditor::new().map_err(|e| Error::Message(e.to_string()))?;
 
         loop {
-            let prompt = format!("[{}]> ", self.current_path);
+            let prompt = format!("[{}]> ", self.client.filesystem.pwd());
             match rl.readline(&prompt) {
                 Ok(line) => {
                     if self.handle_input(line, &mut rl).await? {
@@ -86,52 +82,30 @@ impl Shell {
         match cmd {
             ShellCommand::Ls { path } => self.exec_ls(path).await?,
             ShellCommand::Cd { path } => self.exec_cd(path).await?,
-            ShellCommand::Pwd => println!("{}", self.current_path),
+            ShellCommand::Pwd => println!("{}", self.client.filesystem.pwd()),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
         }
         Ok(false)
     }
 
     async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
-        let target = path.as_deref().unwrap_or(&self.current_path);
-        let entries = self.client.filesystem.list_dir(target)?;
+        let entries = self.client.filesystem.list_dir(path.as_deref())?;
+
         for node in entries {
             let suffix = if node.is_directory() { "/" } else { "" };
-            println!("{}{}", node.name(), suffix);
+            let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");
+            println!(
+                "{:<40}  {}",
+                format!("{}{}", node.name(), suffix),
+                last_modified
+            );
         }
         Ok(())
     }
 
     async fn exec_cd(&mut self, path: Option<String>) -> Result<(), Error> {
-        let (target, is_absolute) = match path {
-            Some(p) => {
-                let absolute = p.starts_with('/');
-                (p, absolute)
-            }
-            None => {
-                self.current_path = "/".to_string();
-                return Ok(());
-            }
-        };
-
-        let target_str = target.clone();
-        let new_path = if is_absolute {
-            target
-        } else {
-            let base = if self.current_path.ends_with('/') {
-                &self.current_path
-            } else {
-                &format!("{}/", self.current_path)
-            };
-            format!("{}{}", base, target)
-        };
-
-        let node = self.client.filesystem.find_node_by_path(&new_path)?;
-        if node.is_directory() {
-            self.current_path = new_path;
-        } else {
-            println!("Not a directory: {}", target_str);
-        }
+        let target = path.as_deref().unwrap_or("/");
+        self.client.filesystem.cd(target)?;
         Ok(())
     }
 }

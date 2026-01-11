@@ -114,7 +114,7 @@ async fn run(args: Args) -> Result<(), Error> {
         Commands::Ls { path } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
             let _ = client.list_files().await?; // Populate tree/cache
-            let target_path = path.as_deref().unwrap_or("/");
+            let target_path = path.as_deref();
             let entries = client
                 .filesystem
                 .list_dir(target_path)
@@ -122,7 +122,12 @@ async fn run(args: Args) -> Result<(), Error> {
 
             for node in entries {
                 let suffix = if node.is_directory() { "/" } else { "" };
-                println!("{}{}\t(ID: {})", node.name(), suffix, node.id());
+                let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");
+                println!(
+                    "{:<40}  {}",
+                    format!("{}{}", node.name(), suffix),
+                    last_modified
+                );
             }
         }
         Commands::Shell => {

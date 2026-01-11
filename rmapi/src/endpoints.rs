@@ -27,14 +27,16 @@ pub const WEBAPP_API_URL_ROOT: &str = "https://web.eu.tectonic.remarkable.com";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct V4Metadata {
-    #[serde(rename = "visibleName")]
-    pub visible_name: Option<String>,
-    #[serde(rename = "type")]
-    pub doc_type: Option<String>,
-    pub parent: Option<String>,
-    #[serde(rename = "lastModified")]
-    pub last_modified: Option<String>,
-    pub version: Option<u64>,
+    #[serde(rename = "visibleName", default)]
+    pub visible_name: String,
+    #[serde(rename = "type", default)]
+    pub doc_type: String,
+    #[serde(default)]
+    pub parent: String,
+    #[serde(rename = "lastModified", default)]
+    pub last_modified: String,
+    #[serde(default)]
+    pub version: u64,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -440,31 +442,39 @@ pub async fn get_files(
 
             let m_body = metadata_response.text().await.ok()?;
             let metadata_json: V4Metadata = serde_json::from_str(&m_body).ok()?;
-
             if metadata_json.deleted {
                 return None;
             }
 
+            let last_modified = metadata_json
+                .last_modified
+                .parse::<i64>()
+                .ok()
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .unwrap_or_default();
+
             Some(crate::objects::Document {
                 id: Uuid::parse_str(&entry.doc_id).unwrap_or(Uuid::nil()),
-                version: metadata_json.version.unwrap_or(0),
+                version: metadata_json.version,
                 message: String::new(),
                 success: true,
                 blob_url_get: String::new(),
                 blob_url_put: String::new(),
                 blob_url_put_expires: chrono::Utc::now(),
-                last_modified: chrono::Utc::now(),
-                doc_type: if metadata_json.doc_type.as_deref().unwrap_or("") == "CollectionType" {
+                last_modified: last_modified,
+                doc_type: if metadata_json.doc_type == "CollectionType" {
                     crate::objects::DocumentType::Collection
                 } else {
                     crate::objects::DocumentType::Document
                 },
-                display_name: metadata_json
-                    .visible_name
-                    .unwrap_or_else(|| "Unknown".to_string()),
+                display_name: if metadata_json.visible_name.is_empty() {
+                    "Unknown".to_string()
+                } else {
+                    metadata_json.visible_name
+                },
                 current_page: 0,
                 bookmarked: metadata_json.pinned,
-                parent: metadata_json.parent.unwrap_or_default(),
+                parent: metadata_json.parent,
             })
         }));
     }
