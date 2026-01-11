@@ -37,4 +37,6 @@ pub struct Document {
     pub bookmarked: bool,
     #[serde(rename = "Parent")]
     pub parent: String,
+    #[serde(rename = "Hash")]
+    pub hash: String,
 }

@@ -112,6 +112,22 @@ async fn run(args: Args) -> Result<(), Error> {
         Commands::Upload { file_path: _ } => {
             println!("Upload is currently not implemented for Sync V4");
         }
+        Commands::Download { path, recursive } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            let _ = client.list_files().await?; // Populate tree/cache
+
+            let root_node = client.filesystem.get_node_by_path(&path).ok_or_else(|| {
+                Error::Rmapi(rmapi::error::Error::Message(format!(
+                    "Path not found: {}",
+                    path
+                )))
+            })?;
+
+            client
+                .download_tree(root_node, Path::new("."), recursive)
+                .await
+                .map_err(Error::Rmapi)?;
+        }
     }
     Ok(())
 }

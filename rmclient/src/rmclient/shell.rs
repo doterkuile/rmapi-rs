@@ -25,6 +25,14 @@ enum ShellCommand {
     Exit,
     /// Alias for Exit
     Quit,
+    /// Download a file or directory
+    Download {
+        /// Path to the file or directory to download
+        path: String,
+        /// Recursive download (for directories)
+        #[arg(short, long)]
+        recursive: bool,
+    },
 }
 
 pub struct Shell {
@@ -101,6 +109,9 @@ impl Shell {
             ShellCommand::Cd { path } => self.exec_cd(path).await?,
             ShellCommand::Pwd => println!("{}", self.current_path),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
+            ShellCommand::Download { path, recursive } => {
+                self.exec_download(path, recursive).await?
+            }
         }
         Ok(false)
     }
@@ -172,6 +183,19 @@ impl Shell {
                 println!("No such directory: {}", target);
             }
         }
+        Ok(())
+    }
+
+    async fn exec_download(&self, path: String, recursive: bool) -> Result<(), Error> {
+        let node = self
+            .client
+            .filesystem
+            .get_node_by_path(&path)
+            .ok_or_else(|| Error::Message(format!("Path not found: {}", path)))?;
+        self.client
+            .download_tree(node, std::path::Path::new("."), recursive)
+            .await
+            .map_err(Error::Rmapi)?;
         Ok(())
     }
 }

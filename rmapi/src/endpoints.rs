@@ -475,6 +475,7 @@ pub async fn get_files(
                 current_page: 0,
                 bookmarked: metadata_json.pinned,
                 parent: metadata_json.parent,
+                hash: entry.hash.clone(),
             })
         }));
     }
@@ -488,4 +489,16 @@ pub async fn get_files(
     }
 
     Ok((documents, root_hash))
+}
+pub async fn fetch_blob(base_url: &str, auth_token: &str, hash: &str) -> Result<Vec<u8>, Error> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/sync/v3/files/{}", base_url, hash))
+        .bearer_auth(auth_token)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let bytes = response.bytes().await?;
+    Ok(bytes.to_vec())
 }
