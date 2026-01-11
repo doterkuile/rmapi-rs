@@ -138,6 +138,7 @@ impl Shell {
             None => self.current_path.clone(),
         };
         let entries = self.client.filesystem.list_dir(Some(&target))?;
+
         for node in entries {
             let suffix = if node.is_directory() { "/" } else { "" };
             let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");

@@ -71,6 +71,7 @@ async fn run(args: Args) -> Result<(), Error> {
         }
         Commands::Ls { path } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
+<<<<<<< HEAD
             if let Err(e) = client.list_files().await {
                 if e.is_unauthorized() {
                     log::info!("Token expired, refreshing...");
@@ -84,6 +85,14 @@ async fn run(args: Args) -> Result<(), Error> {
 
             let target_path = path.as_deref().unwrap_or("/");
             let entries = client.filesystem.list_dir(Some(target_path))?;
+=======
+            let _ = client.list_files().await?; // Populate tree/cache
+            let target_path = path.as_deref();
+            let entries = client
+                .filesystem
+                .list_dir(target_path)
+                .map_err(|e| Error::Rmapi(e))?;
+>>>>>>> 912a9c2 (Improve ls output)
 
             for node in entries {
                 let suffix = if node.is_directory() { "/" } else { "" };
