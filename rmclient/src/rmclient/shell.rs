@@ -1,7 +1,29 @@
 use crate::rmclient::error::Error;
+use clap::Parser;
 use rmapi::Client;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+
+#[derive(Parser, Debug)]
+#[command(name = "", no_binary_name = true)]
+enum ShellCommand {
+    /// List files in the current or specified path
+    Ls {
+        /// Optional path to list
+        path: Option<String>,
+    },
+    /// Change the current directory
+    Cd {
+        /// Path to navigate to
+        path: Option<String>,
+    },
+    /// Print the current working directory
+    Pwd,
+    /// Exit the shell
+    Exit,
+    /// Alias for Exit
+    Quit,
+}
 
 pub struct Shell {
     client: Client,
@@ -19,77 +41,96 @@ impl Shell {
     pub async fn run(&mut self) -> Result<(), Error> {
         println!("Welcome to rmapi-rs shell!");
         println!("Loading file tree...");
-        let _ = self.client.list_files().await?;
+        self.client.list_files().await?;
 
         let mut rl: DefaultEditor =
             DefaultEditor::new().map_err(|e| Error::Message(e.to_string()))?;
 
         loop {
-            let readline = rl.readline(&format!("[{}]> ", self.current_path));
-            match readline {
+            let prompt = format!("[{}]> ", self.current_path);
+            match rl.readline(&prompt) {
                 Ok(line) => {
-                    let _ = rl.add_history_entry(line.as_str());
-                    let parts: Vec<&str> = line.trim().split_whitespace().collect();
-                    if parts.is_empty() {
-                        continue;
-                    }
-
-                    match parts[0] {
-                        "ls" => {
-                            let target = if parts.len() > 1 {
-                                parts[1]
-                            } else {
-                                &self.current_path
-                            };
-                            match self.client.filesystem.list_dir(target) {
-                                Ok(entries) => {
-                                    for node in entries {
-                                        let suffix = if node.is_directory() { "/" } else { "" };
-                                        println!("{}{}", node.name(), suffix);
-                                    }
-                                }
-                                Err(e) => println!("Error: {}", e),
-                            }
-                        }
-                        "cd" => {
-                            if parts.len() > 1 {
-                                let target = parts[1];
-                                let new_path = if target.starts_with('/') {
-                                    target.to_string()
-                                } else {
-                                    let base = if self.current_path.ends_with('/') {
-                                        &self.current_path
-                                    } else {
-                                        &format!("{}/", self.current_path)
-                                    };
-                                    format!("{}{}", base, target)
-                                };
-
-                                match self.client.filesystem.find_node_by_path(&new_path) {
-                                    Ok(node) => {
-                                        if node.is_directory() {
-                                            self.current_path = new_path;
-                                        } else {
-                                            println!("Not a directory: {}", target);
-                                        }
-                                    }
-                                    Err(e) => println!("Error: {}", e),
-                                }
-                            } else {
-                                self.current_path = "/".to_string();
-                            }
-                        }
-                        "pwd" => println!("{}", self.current_path),
-                        "exit" | "quit" => break,
-                        _ => println!("Unknown command: {}", parts[0]),
+                    if self.handle_input(line, &mut rl).await? {
+                        break;
                     }
                 }
                 Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
-                Err(err) => {
-                    println!("Error: {:?}", err);
-                    break;
-                }
+                Err(err) => return Err(Error::Message(format!("Readline error: {:?}", err))),
             }
+        }
+        Ok(())
+    }
+
+    async fn handle_input(&mut self, line: String, rl: &mut DefaultEditor) -> Result<bool, Error> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(false);
+        }
+        let _ = rl.add_history_entry(line);
+
+        let parts = shlex::split(line).unwrap_or_default();
+        if parts.is_empty() {
+            return Ok(false);
+        }
+
+        match ShellCommand::try_parse_from(&parts) {
+            Ok(cmd) => self.handle_command(cmd).await,
+            Err(e) => {
+                println!("{}", e);
+                Ok(false)
+            }
+        }
+    }
+
+    async fn handle_command(&mut self, cmd: ShellCommand) -> Result<bool, Error> {
+        match cmd {
+            ShellCommand::Ls { path } => self.exec_ls(path).await?,
+            ShellCommand::Cd { path } => self.exec_cd(path).await?,
+            ShellCommand::Pwd => println!("{}", self.current_path),
+            ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
+        }
+        Ok(false)
+    }
+
+    async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
+        let target = path.as_deref().unwrap_or(&self.current_path);
+        let entries = self.client.filesystem.list_dir(target)?;
+        for node in entries {
+            let suffix = if node.is_directory() { "/" } else { "" };
+            println!("{}{}", node.name(), suffix);
+        }
+        Ok(())
+    }
+
+    async fn exec_cd(&mut self, path: Option<String>) -> Result<(), Error> {
+        let (target, is_absolute) = match path {
+            Some(p) => {
+                let absolute = p.starts_with('/');
+                (p, absolute)
+            }
+            None => {
+                self.current_path = "/".to_string();
+                return Ok(());
+            }
+        };
+
+        let target_str = target.clone();
+        let new_path = if is_absolute {
+            target
+        } else {
+            let base = if self.current_path.ends_with('/') {
+                &self.current_path
+            } else {
+                &format!("{}/", self.current_path)
+            };
+            format!("{}{}", base, target)
+        };
+
+        let node = self.client.filesystem.find_node_by_path(&new_path)?;
+        if node.is_directory() {
+            self.current_path = new_path;
+        } else {
+            println!("Not a directory: {}", target_str);
         }
         Ok(())
     }
