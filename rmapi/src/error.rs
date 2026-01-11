@@ -22,6 +22,18 @@ impl fmt::Display for Error {
     }
 }
 
+impl Error {
+    pub fn is_unauthorized(&self) -> bool {
+        match self {
+            Error::Reqwest(e) => e
+                .status()
+                .map(|s| s == reqwest::StatusCode::UNAUTHORIZED)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+}
+
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
