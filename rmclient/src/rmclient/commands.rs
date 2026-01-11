@@ -15,9 +15,16 @@ pub enum Commands {
     },
     /// Start interactive shell
     Shell,
-    /// Upload a file to the reMarkable Cloud
     Upload {
         /// Path to the file to upload
         file_path: PathBuf,
+    },
+    /// Download a file or directory
+    Download {
+        /// Path to the file or directory to download
+        path: String,
+        /// Recursive download (for directories)
+        #[arg(short, long)]
+        recursive: bool,
     },
 }

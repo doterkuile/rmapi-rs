@@ -144,4 +144,8 @@ impl FileSystem {
 
         Ok(current)
     }
+
+    pub fn get_node_by_path(&self, path: &str) -> Option<&Node> {
+        self.find_node_by_path(path).ok()
+    }
 }
