@@ -133,14 +133,19 @@ impl Shell {
     }
 
     async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
-        let target = match path {
-            Some(p) => self.normalize_path(&p),
+        let target = match &path {
+            Some(p) => self.normalize_path(p),
             None => self.current_path.clone(),
         };
-        let entries = self.client.filesystem.list_dir(&target)?;
+        let entries = self.client.filesystem.list_dir(Some(&target))?;
         for node in entries {
             let suffix = if node.is_directory() { "/" } else { "" };
-            println!("{}{}", node.name(), suffix);
+            let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");
+            println!(
+                "{:<40}  {}",
+                format!("{}{}", node.name(), suffix),
+                last_modified
+            );
         }
         Ok(())
     }
