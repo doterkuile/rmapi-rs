@@ -5,16 +5,18 @@ use crate::objects::Document;
 
 pub struct Client {
     pub auth_token: String,
+    pub device_token: Option<String>,
     pub storage_url: String,
     pub filesystem: FileSystem,
 }
 
 impl Client {
-    pub async fn from_token(auth_token: &str) -> Result<Self, Error> {
+    pub async fn from_token(auth_token: &str, device_token: Option<String>) -> Result<Self, Error> {
         log::debug!("New client with auth token");
         let filesystem = FileSystem::load_cache().unwrap_or_else(|_| FileSystem::new());
         Ok(Client {
             auth_token: auth_token.to_string(),
+            device_token,
             storage_url: STORAGE_API_URL_ROOT.to_string(),
             filesystem,
         })
@@ -24,12 +26,13 @@ impl Client {
         log::debug!("Registering client with reMarkable Cloud");
         let device_token = register_client(code).await?;
         let user_token = refresh_token(&device_token).await?;
-        Client::from_token(&user_token).await
+        Client::from_token(&user_token, Some(device_token)).await
     }
 
     pub async fn refresh_token(&mut self) -> Result<(), Error> {
         log::debug!("Refreshing auth token");
-        let new_token = refresh_token(&self.auth_token).await?;
+        let token_to_use = self.device_token.as_ref().unwrap_or(&self.auth_token);
+        let new_token = refresh_token(token_to_use).await?;
         self.auth_token = new_token;
         Ok(())
     }

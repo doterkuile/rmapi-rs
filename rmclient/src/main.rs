@@ -1,4 +1,5 @@
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use dirs::config_dir;
@@ -31,12 +32,30 @@ struct Args {
     command: Commands,
 }
 
-async fn write_token_file(auth_token: &str, auth_token_file: &Path) -> Result<(), Error> {
+#[derive(Serialize, Deserialize, Debug)]
+struct AuthData {
+    device_token: String,
+    user_token: String,
+}
+
+async fn write_token_file(client: &Client, auth_token_file: &Path) -> Result<(), Error> {
     if let Some(parent) = auth_token_file.parent() {
         log::debug!("Making client config dir {:?}", parent);
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::write(auth_token_file, auth_token).await?;
+
+    if let Some(device_token) = &client.device_token {
+        let auth_data = AuthData {
+            device_token: device_token.clone(),
+            user_token: client.auth_token.clone(),
+        };
+        let json = serde_json::to_string_pretty(&auth_data)
+            .map_err(|e| Error::Rmapi(rmapi::error::Error::Message(e.to_string())))?;
+        tokio::fs::write(auth_token_file, json).await?;
+    } else {
+        tokio::fs::write(auth_token_file, &client.auth_token).await?;
+    }
+
     log::debug!("Saving auth token to: {:?}", auth_token_file);
     Ok(())
 }
@@ -45,7 +64,7 @@ async fn write_token_file(auth_token: &str, auth_token_file: &Path) -> Result<()
 async fn refresh_client_token(client: &mut Client, auth_token_file: &Path) -> Result<(), Error> {
     client.refresh_token().await?;
     log::debug!("Saving new auth token to: {:?}", auth_token_file);
-    write_token_file(&client.auth_token, auth_token_file).await?;
+    write_token_file(client, auth_token_file).await?;
     Ok(())
 }
 
@@ -55,12 +74,19 @@ async fn client_from_token_file(auth_token_file: &Path) -> Result<Client, Error>
     } else if !auth_token_file.is_file() {
         Err(Error::TokenFileInvalid)
     } else {
-        let auth_token = tokio::fs::read_to_string(&auth_token_file).await?;
+        let file_content = tokio::fs::read_to_string(&auth_token_file).await?;
         log::debug!(
             "Using token from {:?} to create a new client",
             auth_token_file
         );
-        Ok(Client::from_token(&auth_token).await?)
+
+        // Try parsing as JSON first
+        if let Ok(auth_data) = serde_json::from_str::<AuthData>(&file_content) {
+            Ok(Client::from_token(&auth_data.user_token, Some(auth_data.device_token)).await?)
+        } else {
+            // Fallback to legacy plain text token (treat as user token only)
+            Ok(Client::from_token(&file_content.trim(), None).await?)
+        }
     }
 }
 
@@ -79,7 +105,7 @@ async fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Commands::Register { code } => {
             let client = Client::new(&code).await?;
-            write_token_file(&client.auth_token, &args.auth_token_file).await?;
+            write_token_file(&client, &args.auth_token_file).await?;
             println!(
                 "Registration successful! Token saved to {:?}",
                 args.auth_token_file

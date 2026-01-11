@@ -1333,6 +1333,8 @@ dependencies = [
  "log",
  "rmapi",
  "rustyline",
+ "serde",
+ "serde_json",
  "shlex",
  "tokio",
 ]
