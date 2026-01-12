@@ -33,3 +33,5 @@ chrono = { version = "0.4.38", features = ["serde"] }
 dirs = "6.0.0"
 zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 async-recursion = "1.1.1"
+sha2 = "0.10.9"
+hex = "0.4.3"

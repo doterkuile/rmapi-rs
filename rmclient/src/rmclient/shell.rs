@@ -31,6 +31,13 @@ enum ShellCommand {
         #[arg(short, long)]
         recursive: bool,
     },
+    /// Rename a file
+    Mv {
+        /// Current path
+        path: String,
+        /// New name
+        new_name: String,
+    },
 }
 
 pub struct Shell {
@@ -95,8 +102,26 @@ impl Shell {
             ShellCommand::Download { path, recursive } => {
                 self.exec_download(path, recursive).await?
             }
+            ShellCommand::Mv { path, new_name } => self.exec_mv(path, new_name).await?,
         }
         Ok(false)
+    }
+
+    async fn exec_mv(&mut self, path: String, new_name: String) -> Result<(), Error> {
+        let node = self
+            .client
+            .filesystem
+            .get_node_by_path(&path)
+            .ok_or_else(|| Error::Message(format!("Path not found: {}", path)))?;
+
+        self.client
+            .rename_entry(&node.document, &new_name)
+            .await
+            .map_err(|e| Error::Rmapi(e))?;
+        // Refresh file list to see changes
+        self.client.list_files().await?;
+        println!("Renamed {} to {}", path, new_name);
+        Ok(())
     }
 
     async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {

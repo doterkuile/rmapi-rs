@@ -189,4 +189,203 @@ impl Client {
         }
         Ok(())
     }
+
+    pub async fn rename_entry(&self, doc: &Document, new_name: &str) -> Result<(), Error> {
+        use crate::endpoints::{update_root, upload_blob, STORAGE_API_URL_ROOT};
+        use sha2::{Digest, Sha256};
+
+        log::info!("Renaming document {} to {}", doc.display_name, new_name);
+
+        // 1. Get current root hash/generation
+        let client = reqwest::Client::new();
+        let root_hash_response = client
+            .get(format!(
+                "{}/{}",
+                STORAGE_API_URL_ROOT,
+                crate::endpoints::ROOT_SYNC_ENDPOINT
+            ))
+            .bearer_auth(&self.auth_token)
+            .header("Accept", "application/json")
+            .header("rm-filename", "roothash")
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let root_resp_text = root_hash_response.text().await?;
+        let root_info: serde_json::Value = serde_json::from_str(&root_resp_text)?;
+        let current_root_hash = root_info["hash"].as_str().unwrap_or_default().to_string();
+        let current_generation = root_info["generation"].as_u64().unwrap_or(0);
+
+        // 2. Fetch Root Index Blob
+        let root_blob = fetch_blob(&self.storage_url, &self.auth_token, &current_root_hash).await?;
+        let root_blob_str = String::from_utf8(root_blob)
+            .map_err(|e| Error::Message(format!("Invalid root blob: {}", e)))?;
+
+        // 3. Find current entry and update it
+        let mut root_lines: Vec<String> = root_blob_str.lines().map(|s| s.to_string()).collect();
+        let doc_id_str = doc.id.to_string();
+
+        let mut target_index = 0;
+        let mut found = false;
+
+        for (i, line) in root_lines.iter().enumerate() {
+            if i == 0 {
+                continue;
+            } // Skip schema version
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 3 && parts[2] == doc_id_str {
+                target_index = i;
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(Error::Message(
+                "Document not found in root index".to_string(),
+            ));
+        }
+
+        // 4. Fetch .docSchema to find metadata hash
+        let doc_schema_bytes = fetch_blob(&self.storage_url, &self.auth_token, &doc.hash).await?;
+        let doc_schema_str = String::from_utf8(doc_schema_bytes)
+            .map_err(|e| Error::Message(format!("Invalid doc schema: {}", e)))?;
+
+        let mut metadata_hash = String::new();
+        let mut metadata_line_idx = 0;
+        let mut doc_schema_lines: Vec<String> =
+            doc_schema_str.lines().map(|s| s.to_string()).collect();
+
+        for (i, line) in doc_schema_lines.iter().enumerate() {
+            if line.contains(".metadata") {
+                let parts: Vec<&str> = line.split(':').collect();
+                metadata_hash = parts[0].to_string();
+                metadata_line_idx = i;
+                break;
+            }
+        }
+
+        if metadata_hash.is_empty() {
+            return Err(Error::Message(
+                "Metadata not found in doc schema".to_string(),
+            ));
+        }
+
+        // 5. Fetch and Update Metadata
+        let metadata_bytes =
+            fetch_blob(&self.storage_url, &self.auth_token, &metadata_hash).await?;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&metadata_bytes).map_err(|e| Error::Message(e.to_string()))?;
+
+        log::info!("Original metadata: {}", metadata);
+
+        metadata["visibleName"] = serde_json::json!(new_name);
+
+        if let Some(v) = metadata["version"].as_u64() {
+            metadata["version"] = serde_json::json!(v + 1);
+        }
+
+        metadata["lastModified"] =
+            serde_json::json!(chrono::Utc::now().timestamp_millis().to_string());
+        metadata["metadatamodified"] = serde_json::json!(true);
+
+        log::info!("New metadata: {}", metadata);
+
+        let new_metadata_bytes =
+            serde_json::to_vec(&metadata).map_err(|e| Error::Message(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&new_metadata_bytes);
+        let new_metadata_hash = hex::encode(hasher.finalize());
+
+        // Upload Metadata
+        log::info!(
+            "Uploading metadata: {} (hash: {})",
+            format!("{}.metadata", doc.id),
+            new_metadata_hash
+        );
+        upload_blob(
+            &self.storage_url,
+            &self.auth_token,
+            &new_metadata_hash,
+            &format!("{}.metadata", doc.id),
+            new_metadata_bytes.clone(),
+        )
+        .await?;
+
+        // 6. Update .docSchema
+        let old_meta_line = &doc_schema_lines[metadata_line_idx];
+        let parts: Vec<&str> = old_meta_line.split(':').collect();
+        let new_meta_line = format!(
+            "{}:{}:{}:{}",
+            new_metadata_hash,
+            parts[1],
+            parts[2],
+            new_metadata_bytes.len()
+        );
+        doc_schema_lines[metadata_line_idx] = new_meta_line;
+
+        let new_doc_schema_str = doc_schema_lines.join("\n");
+        let new_doc_schema_bytes = new_doc_schema_str.as_bytes();
+
+        let mut hasher = Sha256::new();
+        hasher.update(new_doc_schema_bytes);
+        let new_doc_schema_hash = hex::encode(hasher.finalize());
+
+        log::info!(
+            "Uploading doc schema: {} (hash: {})",
+            format!("{}.docSchema", doc.id),
+            new_doc_schema_hash
+        );
+        upload_blob(
+            &self.storage_url,
+            &self.auth_token,
+            &new_doc_schema_hash,
+            &format!("{}.docSchema", doc.id),
+            new_doc_schema_bytes.to_vec(),
+        )
+        .await?;
+
+        // 7. Update Root Index
+        let old_root_line = &root_lines[target_index];
+        let r_parts: Vec<&str> = old_root_line.split(':').collect();
+        // hash:type:id:subfiles:size. We update hash (0) and size (4)
+        let new_root_line = format!(
+            "{}:{}:{}:{}:{}",
+            new_doc_schema_hash,
+            r_parts[1],
+            r_parts[2],
+            r_parts[3],
+            new_doc_schema_bytes.len()
+        );
+        root_lines[target_index] = new_root_line;
+
+        let new_root_blob_str = root_lines.join("\n");
+        let new_root_blob_bytes = new_root_blob_str.as_bytes();
+
+        let mut hasher = Sha256::new();
+        hasher.update(new_root_blob_bytes);
+        let new_root_hash = hex::encode(hasher.finalize());
+
+        log::info!("Uploading root index: roothash (hash: {})", new_root_hash);
+        upload_blob(
+            &self.storage_url,
+            &self.auth_token,
+            &new_root_hash,
+            "roothash",
+            new_root_blob_bytes.to_vec(),
+        )
+        .await?;
+
+        // 8. Update Root
+        update_root(
+            &self.storage_url,
+            &self.auth_token,
+            &new_root_hash,
+            current_generation + 1,
+        )
+        .await?;
+
+        log::info!("Rename successful");
+        Ok(())
+    }
 }
