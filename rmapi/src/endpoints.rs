@@ -45,12 +45,12 @@ pub struct V4Metadata {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct V4Entry {
-    hash: String,
-    doc_type: String,
-    doc_id: String,
-    subfiles: u32,
-    size: u64,
+pub struct V4Entry {
+    pub hash: String,
+    pub doc_type: String,
+    pub doc_id: String,
+    pub subfiles: u32,
+    pub size: u64,
 }
 
 const DOC_UPLOAD_ENDPOINT: &str = "doc/v2/files";
@@ -501,4 +501,47 @@ pub async fn fetch_blob(base_url: &str, auth_token: &str, hash: &str) -> Result<
 
     let bytes = response.bytes().await?;
     Ok(bytes.to_vec())
+}
+
+pub async fn upload_blob(
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+    filename: &str,
+    data: Vec<u8>,
+) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+    let _response = client
+        .put(format!("{}/sync/v3/files/{}", base_url, hash))
+        .bearer_auth(auth_token)
+        .header("rm-filename", filename)
+        .header("rm-source", "Remarkable (desktop)")
+        .body(data)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+pub async fn update_root(
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+    generation: u64,
+) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "hash": hash,
+        "generation": generation
+    });
+
+    let response = client
+        .put(format!("{}/sync/v4/root", base_url))
+        .bearer_auth(auth_token)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
