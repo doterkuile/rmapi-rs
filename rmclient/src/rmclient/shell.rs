@@ -92,9 +92,39 @@ impl Shell {
         Ok(false)
     }
 
+    fn normalize_path(&self, path: &str) -> String {
+        let mut components = Vec::new();
+
+        if !path.starts_with('/') {
+            // Relative path, start with current components
+            for part in self.current_path.split('/').filter(|s| !s.is_empty()) {
+                components.push(part.to_string());
+            }
+        }
+
+        for part in path.split('/').filter(|s| !s.is_empty()) {
+            match part {
+                "." => {}
+                ".." => {
+                    components.pop();
+                }
+                _ => components.push(part.to_string()),
+            }
+        }
+
+        if components.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", components.join("/"))
+        }
+    }
+
     async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
-        let target = path.as_deref().unwrap_or(&self.current_path);
-        let entries = self.client.filesystem.list_dir(target)?;
+        let target = match path {
+            Some(p) => self.normalize_path(&p),
+            None => self.current_path.clone(),
+        };
+        let entries = self.client.filesystem.list_dir(&target)?;
         for node in entries {
             let suffix = if node.is_directory() { "/" } else { "" };
             println!("{}{}", node.name(), suffix);
@@ -103,34 +133,25 @@ impl Shell {
     }
 
     async fn exec_cd(&mut self, path: Option<String>) -> Result<(), Error> {
-        let (target, is_absolute) = match path {
-            Some(p) => {
-                let absolute = p.starts_with('/');
-                (p, absolute)
-            }
+        let target = match path {
+            Some(p) => self.normalize_path(&p),
             None => {
                 self.current_path = "/".to_string();
                 return Ok(());
             }
         };
 
-        let target_str = target.clone();
-        let new_path = if is_absolute {
-            target
-        } else {
-            let base = if self.current_path.ends_with('/') {
-                &self.current_path
-            } else {
-                &format!("{}/", self.current_path)
-            };
-            format!("{}{}", base, target)
-        };
-
-        let node = self.client.filesystem.find_node_by_path(&new_path)?;
-        if node.is_directory() {
-            self.current_path = new_path;
-        } else {
-            println!("Not a directory: {}", target_str);
+        match self.client.filesystem.find_node_by_path(&target) {
+            Ok(node) => {
+                if node.is_directory() {
+                    self.current_path = target;
+                } else {
+                    println!("Not a directory: {}", target);
+                }
+            }
+            Err(_) => {
+                println!("No such directory: {}", target);
+            }
         }
         Ok(())
     }

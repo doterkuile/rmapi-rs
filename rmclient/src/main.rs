@@ -89,10 +89,7 @@ async fn run(args: Args) -> Result<(), Error> {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
             let _ = client.list_files().await?; // Populate tree/cache
             let target_path = path.as_deref().unwrap_or("/");
-            let entries = client
-                .filesystem
-                .list_dir(target_path)
-                .map_err(|e| Error::Rmapi(e))?;
+            let entries = client.filesystem.list_dir(target_path)?;
 
             for node in entries {
                 let suffix = if node.is_directory() { "/" } else { "" };

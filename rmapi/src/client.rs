@@ -12,7 +12,10 @@ pub struct Client {
 impl Client {
     pub async fn from_token(auth_token: &str) -> Result<Self, Error> {
         log::debug!("New client with auth token");
-        let filesystem = FileSystem::load_cache().unwrap_or_else(|_| FileSystem::new());
+        let filesystem = FileSystem::load_cache().unwrap_or_else(|e| {
+            log::error!("Failed to load cache, creating new one. Error: {}", e);
+            FileSystem::new()
+        });
         Ok(Client {
             auth_token: auth_token.to_string(),
             storage_url: STORAGE_API_URL_ROOT.to_string(),
@@ -52,10 +55,14 @@ impl Client {
 
         let root_resp_text = root_hash_response.text().await?;
         let root_info: serde_json::Value = serde_json::from_str(&root_resp_text)?;
-        let remote_hash = root_info["hash"].as_str().unwrap_or_default().to_string();
-
+        let remote_hash = root_info["hash"]
+            .as_str()
+            .ok_or(Error::Message(
+                "Missing hash field in root hash response".to_string(),
+            ))?
+            .to_string();
         if remote_hash == self.filesystem.current_hash {
-            log::debug!("Cache hit, using local tree");
+            log::debug!("Cache unchanged, using local tree");
             return Ok(self.filesystem.get_all_documents());
         }
 

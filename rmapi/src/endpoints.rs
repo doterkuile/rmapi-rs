@@ -446,7 +446,7 @@ pub async fn get_files(
             }
 
             Some(crate::objects::Document {
-                id: Uuid::parse_str(&entry.doc_id).unwrap_or(Uuid::nil()),
+                id: Uuid::parse_str(&entry.doc_id).ok()?,
                 version: metadata_json.version.unwrap_or(0),
                 message: String::new(),
                 success: true,
