@@ -1,6 +1,7 @@
-mod collection;
-mod document;
-mod node;
+pub mod collection;
+pub mod document;
+pub mod internal;
+pub mod node;
 
 pub use collection::Collection;
 pub use document::{Document, DocumentType};

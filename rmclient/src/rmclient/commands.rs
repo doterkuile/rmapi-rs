@@ -8,6 +8,8 @@ pub enum Commands {
         /// Registration code from https://my.remarkable.com/device/desktop/connect
         code: String,
     },
+    /// Debug command to fetch content of first document
+    Debug,
     /// List files in the reMarkable Cloud
     Ls {
         /// Optional path to list
@@ -18,6 +20,8 @@ pub enum Commands {
     Upload {
         /// Path to the file to upload
         file_path: PathBuf,
+        /// Remote directory to upload to
+        remote_path: Option<String>,
     },
     /// Download a file or directory
     Download {
@@ -26,5 +30,12 @@ pub enum Commands {
         /// Recursive download (for directories)
         #[arg(short, long)]
         recursive: bool,
+    },
+    /// Rename a file or directory
+    Rename {
+        /// Name of the file to rename
+        name: String,
+        /// New name
+        new_name: String,
     },
 }

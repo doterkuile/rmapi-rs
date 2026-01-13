@@ -100,8 +100,76 @@ async fn run(args: Args) -> Result<(), Error> {
             let mut shell = crate::rmclient::shell::Shell::new(client, args.auth_token_file);
             shell.run().await?;
         }
-        Commands::Upload { file_path: _ } => {
-            println!("Upload is currently not implemented for Sync V4");
+        Commands::Upload {
+            file_path,
+            remote_path,
+        } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            if let Err(e) = client.list_files().await {
+                if e.is_unauthorized() {
+                    log::info!("Token expired, refreshing...");
+                    client.refresh_token().await?;
+                    write_token_file(&client, &args.auth_token_file).await?;
+                    client.list_files().await?;
+                } else {
+                    return Err(Error::Rmapi(e));
+                }
+            }
+            client
+                .upload_document(&file_path, remote_path.as_deref())
+                .await
+                .map_err(Error::Rmapi)?;
+            println!("Upload successful");
+        }
+        Commands::Debug => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            println!("Debugging...");
+            if let Err(e) = client.list_files().await {
+                if e.is_unauthorized() {
+                    log::info!("Token expired, refreshing...");
+                    client.refresh_token().await?;
+                    write_token_file(&client, &args.auth_token_file).await?;
+                    client.list_files().await?;
+                } else {
+                    return Err(Error::Rmapi(e));
+                }
+            }
+            let files = client.filesystem.get_all_documents();
+            if let Some(doc) = files
+                .iter()
+                .find(|d| d.doc_type == rmapi::objects::DocumentType::Document)
+            {
+                println!("Found document: {}", doc.display_name);
+                // Fetch schema
+                let schema_bytes = rmapi::endpoints::fetch_blob(
+                    &client.storage_url,
+                    &client.auth_token,
+                    &doc.hash,
+                )
+                .await
+                .map_err(|e| Error::Rmapi(e))?;
+                let schema = String::from_utf8_lossy(&schema_bytes);
+                println!("Schema:\n{}", schema);
+
+                for line in schema.lines() {
+                    if line.contains(".content") {
+                        let parts: Vec<&str> = line.split(':').collect();
+                        let content_hash = parts[0];
+                        println!("Fetching content hash: {}", content_hash);
+                        let content_bytes = rmapi::endpoints::fetch_blob(
+                            &client.storage_url,
+                            &client.auth_token,
+                            content_hash,
+                        )
+                        .await
+                        .map_err(|e| Error::Rmapi(e))?;
+                        println!("Content JSON:\n{}", String::from_utf8_lossy(&content_bytes));
+                        break;
+                    }
+                }
+            } else {
+                println!("No documents found.");
+            }
         }
         Commands::Download { path, recursive } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
@@ -118,6 +186,36 @@ async fn run(args: Args) -> Result<(), Error> {
                 .download_tree(root_node, Path::new("."), recursive)
                 .await
                 .map_err(Error::Rmapi)?;
+        }
+        Commands::Rename { name, new_name } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            if let Err(e) = client.list_files().await {
+                if e.is_unauthorized() {
+                    log::info!("Token expired, refreshing...");
+                    client.refresh_token().await?;
+                    write_token_file(&client, &args.auth_token_file).await?;
+                    client.list_files().await?;
+                } else {
+                    return Err(Error::Rmapi(e));
+                }
+            }
+
+            let files = client.filesystem.get_all_documents();
+            let doc = files
+                .iter()
+                .find(|d| d.display_name == name)
+                .ok_or_else(|| {
+                    Error::Rmapi(rmapi::error::Error::Message(format!(
+                        "Document not found: {}",
+                        name
+                    )))
+                })?;
+
+            client
+                .rename_entry(doc, &new_name)
+                .await
+                .map_err(Error::Rmapi)?;
+            println!("Rename successful");
         }
     }
     Ok(())

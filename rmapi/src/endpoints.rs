@@ -1,4 +1,5 @@
 use crate::error::Error;
+use base64::Engine;
 use const_format::formatcp;
 use log;
 use reqwest::{self, Body};
@@ -509,17 +510,42 @@ pub async fn upload_blob(
     hash: &str,
     filename: &str,
     data: Vec<u8>,
+    content_type: &str,
 ) -> Result<(), Error> {
+    let checksum = crc32c::crc32c(&data);
+    let checksum_bytes = checksum.to_be_bytes();
+    let content_md5 = base64::prelude::BASE64_STANDARD.encode(checksum_bytes);
+    let hash_header_value = format!("crc32c={}", content_md5);
+
     let client = reqwest::Client::new();
-    let _response = client
+    let response = client
         .put(format!("{}/sync/v3/files/{}", base_url, hash))
         .bearer_auth(auth_token)
         .header("rm-filename", filename)
-        .header("rm-source", "Remarkable (desktop)")
+        .header("rm-source", "rmapi-rs")
+        .header("User-Agent", "rmapi-rs")
+        .header("x-goog-hash", hash_header_value)
+        .header("Content-Type", content_type)
+        .header("Content-Length", data.len().to_string())
         .body(data)
         .send()
-        .await?
-        .error_for_status()?;
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        log::error!(
+            "Upload failed for {} ({}): {} - {}",
+            filename,
+            hash,
+            status,
+            text
+        );
+        return Err(Error::Message(format!(
+            "Upload failed: {} - {}",
+            status, text
+        )));
+    }
     Ok(())
 }
 
@@ -532,11 +558,12 @@ pub async fn update_root(
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "hash": hash,
-        "generation": generation
+        "generation": generation,
+        "broadcast": true
     });
 
-    let response = client
-        .put(format!("{}/sync/v4/root", base_url))
+    client
+        .put(format!("{}/sync/v3/root", base_url))
         .bearer_auth(auth_token)
         .header("Content-Type", "application/json")
         .json(&body)
