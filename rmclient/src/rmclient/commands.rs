@@ -38,4 +38,9 @@ pub enum Commands {
         /// New name
         new_name: String,
     },
+    /// Remove a file or directory
+    Remove {
+        /// Name of the file to remove
+        name: String,
+    },
 }

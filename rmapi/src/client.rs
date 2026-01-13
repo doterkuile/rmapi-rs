@@ -264,9 +264,9 @@ impl Client {
         let old_meta_line = &doc_schema_lines[metadata_line_idx];
         let parts: Vec<&str> = old_meta_line.split(':').collect();
         let new_meta_line = format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:0:{}",
             new_metadata_hash,
-            parts[1],
+            "0", // FileType
             parts[2],
             new_metadata_bytes.len()
         );
@@ -329,6 +329,39 @@ impl Client {
         .await?;
 
         log::info!("Rename successful");
+        Ok(())
+    }
+
+    pub async fn delete_entry(&self, doc: &Document) -> Result<(), Error> {
+        log::info!("Deleting document: {}", doc.display_name);
+
+        self.modify_root_index(move |root_lines| {
+            let doc_id_str = doc.id.to_string();
+            let mut target_index = Option::<usize>::None;
+
+            for (i, line) in root_lines.iter().enumerate() {
+                if i == 0 {
+                    continue;
+                }
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() >= 3 && parts[2] == doc_id_str {
+                    target_index = Some(i);
+                    break;
+                }
+            }
+
+            if let Some(idx) = target_index {
+                root_lines.remove(idx);
+                Ok(())
+            } else {
+                Err(Error::Message(
+                    "Document not found in root index".to_string(),
+                ))
+            }
+        })
+        .await?;
+
+        log::info!("Deletion successful");
         Ok(())
     }
 
@@ -458,33 +491,33 @@ impl Client {
 
         // .content
         doc_schema_lines.push(format!(
-            "{}:{}:{}.content:{}",
+            "{}:{}:{}.content:0:{}",
             content_hash,
-            doc_id,
+            "0", // FileType
             doc_id,
             blobs_to_upload[0].2.len()
         ));
         // .pagedata
         doc_schema_lines.push(format!(
-            "{}:{}:{}.pagedata:{}",
+            "{}:{}:{}.pagedata:0:{}",
             pagedata_hash,
-            doc_id,
+            "0", // FileType
             doc_id,
             blobs_to_upload[1].2.len()
         ));
         // .metadata
         doc_schema_lines.push(format!(
-            "{}:{}:{}.metadata:{}",
+            "{}:{}:{}.metadata:0:{}",
             metadata_hash,
-            doc_id,
+            "0", // FileType
             doc_id,
             metadata_bytes.len()
         ));
         // The file itself
         doc_schema_lines.push(format!(
-            "{}:{}:{}.{}:{}",
+            "{}:{}:{}.{}:0:{}",
             file_hash,
-            doc_id,
+            "0", // FileType
             doc_id,
             extension,
             file_bytes.len()
