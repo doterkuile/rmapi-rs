@@ -1,30 +1,19 @@
-use serde::{Serialize, Deserialize};
-use crate::rmapi::object::RemarkableObject;
-
-#[derive(Debug)]
-enum CollectionType {
-
-}
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Collection {
-    id: Uuid,
-    version: u64,
-    message: String,
-    blob_url_get: String,
-    blob_url_get_expires: DateTime<Utc>,
-    blob_url_put: String,
-    blob_url_put_expires: DateTime<Utc>,
-    last_modified: DateTime<Utc>,
-    display_name: String,
-    current_page: u64,
-    type: CollectionType,
-    parent: String,
-    objects: Vec<RemarkableObject>,
-}
-
-impl RemarkableObject for Collection {
-    fn register_client(code: String) -> Result<String, Error> {
-        unimplemented!()
-    }
+pub struct Collection {
+    #[serde(rename = "ID")]
+    pub id: Uuid,
+    #[serde(rename = "Version")]
+    pub version: u64,
+    #[serde(rename = "Message")]
+    pub message: String,
+    #[serde(rename = "VisibleName")]
+    pub display_name: String,
+    #[serde(rename = "ModifiedClient")]
+    pub last_modified: DateTime<Utc>,
+    #[serde(rename = "Parent")]
+    pub parent: String,
 }

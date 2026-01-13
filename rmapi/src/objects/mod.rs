@@ -1,7 +1,7 @@
 mod collection;
 mod document;
-mod remarkable_object;
+mod node;
 
 pub use collection::Collection;
-pub use document::Document;
-pub use remarkable_object::RemarkableObject;
+pub use document::{Document, DocumentType};
+pub use node::{FileTree, Node};

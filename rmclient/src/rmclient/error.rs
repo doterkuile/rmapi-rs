@@ -1,8 +1,8 @@
+use clap;
+use rmapi;
 use std::error;
 use std::fmt;
 use std::io;
-use rmapi;
-use clap;
 
 #[derive(Debug)]
 pub enum Error {
@@ -10,7 +10,8 @@ pub enum Error {
     Rmapi(rmapi::Error),
     Clap(clap::Error),
     TokenFileNotFound,
-    TokenFileInvalid
+    TokenFileInvalid,
+    Message(String),
 }
 
 impl fmt::Display for Error {
@@ -19,9 +20,15 @@ impl fmt::Display for Error {
             Error::Io(ref err) => err.fmt(f),
             Error::Rmapi(ref err) => err.fmt(f),
             Error::Clap(ref err) => err.fmt(f),
-            Error::TokenFileNotFound => write!(f, "Token file not found"),
-            Error::TokenFileInvalid => write!(f, "Token file is not valid"),
-
+            Error::TokenFileNotFound => write!(
+                f,
+                "Token file not found. Please use rmapi register <code> to create one"
+            ),
+            Error::TokenFileInvalid => write!(
+                f,
+                "Token file is not valid. Please use rmapi register <code> to create one"
+            ),
+            Error::Message(ref msg) => write!(f, "{}", msg),
         }
     }
 }
@@ -34,6 +41,7 @@ impl error::Error for Error {
             Error::Clap(ref err) => Some(err),
             Error::TokenFileNotFound => None,
             Error::TokenFileInvalid => None,
+            Error::Message(_) => None,
         }
     }
 }

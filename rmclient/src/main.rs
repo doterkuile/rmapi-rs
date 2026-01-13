@@ -1,42 +1,39 @@
 use clap::Parser;
 use std::path::Path;
 
-use dirs::cache_dir;
+use dirs::config_dir;
 use rmapi::Client;
 use std::path::PathBuf;
-use std::process;
 
 mod rmclient;
+use crate::rmclient::commands::Commands;
 use crate::rmclient::error::Error;
-use tokio::fs::File;
 
 pub fn default_token_file_path() -> PathBuf {
-    cache_dir()
+    config_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("rmapi/auth_token")
 }
 
 #[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(
-        short = 'c',
-        long,
-        help = "code to register this client with reMarkable. Go to https://my.remarkable.com/device/desktop/connect to get a new code."
-    )]
-    code: Option<String>,
-
     #[arg(
         short = 't',
         long = "auth-token-file",
+        env = "RMAPI_AUTH_TOKEN_FILE",
         help = "Path to the file that holds a previously generated session token",
         default_value = default_token_file_path().into_os_string()
     )]
     auth_token_file: PathBuf,
+
+    #[command(subcommand)]
+    command: Commands,
 }
 
 async fn write_token_file(auth_token: &str, auth_token_file: &Path) -> Result<(), Error> {
     if let Some(parent) = auth_token_file.parent() {
-        log::debug!("Making client cache dir {:?}", parent);
+        log::debug!("Making client config dir {:?}", parent);
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(auth_token_file, auth_token).await?;
@@ -44,6 +41,7 @@ async fn write_token_file(auth_token: &str, auth_token_file: &Path) -> Result<()
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn refresh_client_token(client: &mut Client, auth_token_file: &Path) -> Result<(), Error> {
     client.refresh_token().await?;
     log::debug!("Saving new auth token to: {:?}", auth_token_file);
@@ -51,25 +49,6 @@ async fn refresh_client_token(client: &mut Client, auth_token_file: &Path) -> Re
     Ok(())
 }
 
-/// Creates a new `Client` instance from a token stored in a file.
-///
-/// # Arguments
-///
-/// * `auth_token_file` - A `&Path` pointing to the file containing the authentication token.
-///
-/// # Returns
-///
-/// A `Result` containing:
-/// - `Ok(Client)`: A new `Client` instance with the token read from the file.
-/// - `Err(Error)`: An error if the token file is not found, invalid, or cannot be read.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// - The token file does not exist (`Error::TokenFileNotFound`).
-/// - The token file is not a regular file (`Error::TokenFileInvalid`).
-/// - Reading the token file fails.
-/// - Creating a new `Client` from the read token fails.
 async fn client_from_token_file(auth_token_file: &Path) -> Result<Client, Error> {
     if !auth_token_file.exists() {
         Err(Error::TokenFileNotFound)
@@ -86,28 +65,45 @@ async fn client_from_token_file(auth_token_file: &Path) -> Result<Client, Error>
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() {
     env_logger::init();
     let args = Args::parse();
 
-    let mut client;
-
-    if let Some(code) = args.code {
-        client = Client::new(&code).await?;
-    } else if args.auth_token_file.exists() {
-        client = client_from_token_file(&args.auth_token_file).await?;
-    } else {
-        eprintln!("No token file found at {:?}, please either correct the path with `-t` or provide a new verification code with `-c`", args.auth_token_file);
-        process::exit(1);
+    if let Err(err) = run(args).await {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
     }
+}
 
-    println!("Client token: {:?}", client.auth_token);
-    println!("Storage url: {:?}", client.storage_url);
-    //client.sync_root().await?;
+async fn run(args: Args) -> Result<(), Error> {
+    match args.command {
+        Commands::Register { code } => {
+            let client = Client::new(&code).await?;
+            write_token_file(&client.auth_token, &args.auth_token_file).await?;
+            println!(
+                "Registration successful! Token saved to {:?}",
+                args.auth_token_file
+            );
+        }
+        Commands::Ls { path } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            let _ = client.list_files().await?; // Populate tree/cache
+            let target_path = path.as_deref().unwrap_or("/");
+            let entries = client.filesystem.list_dir(target_path)?;
 
-    let file_path = Path::new("test2.pdf");
-    let file = File::open(file_path).await?;
-    client.upload_file(file).await?;
-
+            for node in entries {
+                let suffix = if node.is_directory() { "/" } else { "" };
+                println!("{}{}\t(ID: {})", node.name(), suffix, node.id());
+            }
+        }
+        Commands::Shell => {
+            let client = client_from_token_file(&args.auth_token_file).await?;
+            let mut shell = crate::rmclient::shell::Shell::new(client);
+            shell.run().await?;
+        }
+        Commands::Upload { file_path: _ } => {
+            println!("Upload is currently not implemented for Sync V4");
+        }
+    }
     Ok(())
 }

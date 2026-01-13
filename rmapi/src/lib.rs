@@ -1,6 +1,8 @@
+pub mod client;
 pub mod endpoints;
 pub mod error;
-pub mod client;
+pub mod filesystem;
+pub mod objects;
 
 /// Re-exports the `Client` struct from the `client` module.
 pub use client::Client;
