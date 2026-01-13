@@ -14,6 +14,7 @@ pub struct FileSystem {
     pub tree: FileTree,
     pub current_hash: String,
     pub docs: Vec<Document>,
+    pub current_path: String,
 }
 
 impl FileSystem {
@@ -22,6 +23,7 @@ impl FileSystem {
             tree: FileTree::new(),
             current_hash: String::new(),
             docs: Vec::new(),
+            current_path: "/".to_string(),
         }
     }
 
@@ -34,6 +36,7 @@ impl FileSystem {
                 tree: FileTree::build(cache.documents.clone()),
                 current_hash: cache.hash,
                 docs: cache.documents,
+                current_path: "/".to_string(),
             })
         } else {
             Ok(FileSystem::new())
@@ -68,9 +71,51 @@ impl FileSystem {
             .join("rmapi/tree.cache"))
     }
 
-    pub fn list_dir(&self, path: &str) -> Result<Vec<&Node>, Error> {
-        let node = self.find_node_by_path(path)?;
-        Ok(node.children.values().collect())
+    pub fn list_dir(&self, path: Option<&str>) -> Result<Vec<&Node>, Error> {
+        let target = path.unwrap_or(&self.current_path);
+        let node = self.find_node_by_path(target)?;
+        let mut entries: Vec<&Node> = node.children.values().collect();
+
+        // Sort entries: directories first, then files, both alphabetically
+        entries.sort_by(|a, b| match (a.is_directory(), b.is_directory()) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name().to_lowercase().cmp(&b.name().to_lowercase()),
+        });
+
+        Ok(entries)
+    }
+
+    pub fn cd(&mut self, path: &str) -> Result<(), Error> {
+        let new_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            let base = if self.current_path.ends_with('/') {
+                &self.current_path
+            } else {
+                &format!("{}/", self.current_path)
+            };
+            format!("{}{}", base, path)
+        };
+
+        // Normalize path (very basic normalization)
+        let normalized = if new_path.len() > 1 && new_path.ends_with('/') {
+            new_path[..new_path.len() - 1].to_string()
+        } else {
+            new_path
+        };
+
+        let node = self.find_node_by_path(&normalized)?;
+        if node.is_directory() {
+            self.current_path = normalized;
+            Ok(())
+        } else {
+            Err(Error::Message(format!("Not a directory: {}", path)))
+        }
+    }
+
+    pub fn pwd(&self) -> &str {
+        &self.current_path
     }
 
     pub fn find_node_by_path(&self, path: &str) -> Result<&Node, Error> {

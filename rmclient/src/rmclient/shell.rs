@@ -1,8 +1,10 @@
 use crate::rmclient::error::Error;
+use crate::rmclient::token::write_token_file;
 use clap::Parser;
 use rmapi::Client;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "", no_binary_name = true)]
@@ -28,20 +30,31 @@ enum ShellCommand {
 pub struct Shell {
     client: Client,
     current_path: String,
+    token_file_path: PathBuf,
 }
 
 impl Shell {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: Client, token_file_path: PathBuf) -> Self {
         Shell {
             client,
             current_path: "/".to_string(),
+            token_file_path,
         }
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
         println!("Welcome to rmapi-rs shell!");
         println!("Loading file tree...");
-        self.client.list_files().await?;
+        if let Err(e) = self.client.list_files().await {
+            if e.is_unauthorized() {
+                println!("Token expired, refreshing...");
+                self.client.refresh_token().await?;
+                write_token_file(&self.client, &self.token_file_path).await?;
+                self.client.list_files().await?;
+            } else {
+                return Err(Error::from(e));
+            }
+        }
 
         let mut rl: DefaultEditor =
             DefaultEditor::new().map_err(|e| Error::Message(e.to_string()))?;
@@ -120,14 +133,19 @@ impl Shell {
     }
 
     async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
-        let target = match path {
-            Some(p) => self.normalize_path(&p),
+        let target = match &path {
+            Some(p) => self.normalize_path(p),
             None => self.current_path.clone(),
         };
-        let entries = self.client.filesystem.list_dir(&target)?;
+        let entries = self.client.filesystem.list_dir(Some(&target))?;
         for node in entries {
             let suffix = if node.is_directory() { "/" } else { "" };
-            println!("{}{}", node.name(), suffix);
+            let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");
+            println!(
+                "{:<40}  {}",
+                format!("{}{}", node.name(), suffix),
+                last_modified
+            );
         }
         Ok(())
     }
