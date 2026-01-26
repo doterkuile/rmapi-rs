@@ -103,6 +103,33 @@ async fn run(args: Args) -> Result<(), Error> {
         Commands::Upload { file_path: _ } => {
             println!("Upload is currently not implemented for Sync V4");
         }
+        Commands::Rm { name } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            if let Err(e) = client.list_files().await {
+                if e.is_unauthorized() {
+                    log::info!("Token expired, refreshing...");
+                    client.refresh_token().await?;
+                    write_token_file(&client, &args.auth_token_file).await?;
+                    client.list_files().await?;
+                } else {
+                    return Err(Error::Rmapi(e));
+                }
+            }
+
+            let files = client.filesystem.get_all_documents();
+            let doc = files
+                .iter()
+                .find(|d| d.display_name == name)
+                .ok_or_else(|| {
+                    Error::Rmapi(rmapi::error::Error::Message(format!(
+                        "Document not found: {}",
+                        name
+                    )))
+                })?;
+
+            client.delete_entry(doc).await.map_err(Error::Rmapi)?;
+            println!("Removal successful");
+        }
     }
     Ok(())
 }

@@ -20,4 +20,9 @@ pub enum Commands {
         /// Path to the file to upload
         file_path: PathBuf,
     },
+    /// Remove a file or directory
+    Rm {
+        /// Name of the file to remove
+        name: String,
+    },
 }

@@ -55,13 +55,6 @@ struct V4Entry {
 
 const DOC_UPLOAD_ENDPOINT: &str = "doc/v2/files";
 pub const ROOT_SYNC_ENDPOINT: &str = "sync/v4/root";
-// const FILE_SYNC_ENDPOINT: &str = "sync/v3/files";
-
-// const ITEM_LIST_ENDPOINT: &str = "document-storage/json/2/docs";
-// const ITEM_ENDPOINT: &str = "document-storage/json/2/";
-// const UPLOAD_REQUEST_ENDPOINT: &str = "document-storage/json/2/upload/request";
-// const UPLOAD_STATUS_ENDPOINT: &str = "document-storage/json/2/upload/update-status";
-// const DELETE_ENDPOINT: &str = "/document-storage/json/2/delete";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(non_snake_case)]
@@ -70,28 +63,6 @@ struct ClientRegistation {
     deviceDesc: String,
     deviceID: String,
 }
-
-/// Registers a new client with the reMarkable cloud service.
-///
-/// This function takes a registration code and sends a request to the reMarkable
-/// authentication API to register a new client device. It generates a new UUID
-/// for the device ID.
-///
-/// # Arguments
-///
-/// * `code` - A string that holds the registration code provided by reMarkable.
-///
-/// # Returns
-///
-/// * `Result<String, Error>` - Returns Ok with the response text on success,
-///   or an Error if the registration process fails.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// * The HTTP request fails
-/// * The server responds with an error status
-/// * The response cannot be parsed
 
 pub async fn register_client(code: &str) -> Result<String, Error> {
     log::info!("Registering client with code: {}", code);
@@ -124,26 +95,6 @@ pub async fn register_client(code: &str) -> Result<String, Error> {
     }
 }
 
-/// Refreshes the authentication token for the reMarkable cloud service.
-///
-/// This function takes an existing authentication token and sends a request to
-/// the reMarkable authentication API to obtain a new, refreshed token.
-///
-/// # Arguments
-///
-/// * `auth_token` - A string that holds the current authentication token.
-///
-/// # Returns
-///
-/// * `Result<String, Error>` - Returns Ok with the new token as a string on success,
-///   or an Error if the refresh process fails.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// * The HTTP request fails
-/// * The server responds with an error status
-/// * The response cannot be parsed
 pub async fn refresh_token(auth_token: &str) -> Result<String, Error> {
     log::info!("Refreshing token");
     let client = reqwest::Client::new();
@@ -234,32 +185,6 @@ pub async fn sync_root(storage_url: &str, auth_token: &str) -> Result<String, Er
         }
     }
 }
-
-// pub async fn put_content(storage_url: &str, auth_token: &str, content) {
-//     log::info!("Listing items in the rmCloud");
-//     let client = reqwest::Client::new();
-//     let response = client
-//         .get(format!("{}/{}", storage_url, ROOT_SYNC_ENDPOINT))
-//         .bearer_auth(auth_token)
-//         .header("Accept", "application/json")
-//         .header("rm-filename", "roothash")
-//         .send()
-//         .await?;
-
-//     log::debug!("{:?}", response);
-
-//     match response.error_for_status() {
-//         Ok(res) => {
-//             let root_hash = res.text().await?;
-//             log::debug!("Root Hash: {}", root_hash);
-//             Ok(root_hash)
-//         }
-//         Err(e) => {
-//             log::error!("Error listing items: {}", e);
-//             Err(Error::from(e))
-//         }
-//     }
-// }
 
 pub async fn upload_request(_: &str, auth_token: &str) -> Result<String, Error> {
     log::info!("Requesting to upload a document to the rmCloud");
@@ -488,4 +413,85 @@ pub async fn get_files(
     }
 
     Ok((documents, root_hash))
+}
+
+pub async fn fetch_blob(base_url: &str, auth_token: &str, hash: &str) -> Result<Vec<u8>, Error> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/sync/v3/files/{}", base_url, hash))
+        .bearer_auth(auth_token)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let bytes = response.bytes().await?;
+    Ok(bytes.to_vec())
+}
+
+pub async fn upload_blob(
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+    filename: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<(), Error> {
+    let checksum = crc32c::crc32c(&data);
+    let checksum_bytes = checksum.to_be_bytes();
+    use base64::Engine;
+    let content_md5 = base64::engine::general_purpose::STANDARD.encode(checksum_bytes);
+    let hash_header_value = format!("crc32c={}", content_md5);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .put(format!("{}/sync/v3/files/{}", base_url, hash))
+        .bearer_auth(auth_token)
+        .header("x-goog-hash", hash_header_value)
+        .header("Content-Type", content_type)
+        .header("Content-Length", data.len().to_string())
+        .body(data)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        log::error!(
+            "Upload V4 NO HEADERS DEBUG failed for {} ({}): {} - {}",
+            filename,
+            hash,
+            status,
+            text
+        );
+        return Err(Error::Message(format!(
+            "Upload failed: {} - {}",
+            status, text
+        )));
+    }
+    Ok(())
+}
+
+pub async fn update_root(
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+    generation: u64,
+) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "hash": hash,
+        "generation": generation,
+        "broadcast": true
+    });
+
+    client
+        .put(format!("{}/sync/v3/root", base_url))
+        .bearer_auth(auth_token)
+        .header("Content-Type", "application/json")
+        .header("rm-filename", "roothash")
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }

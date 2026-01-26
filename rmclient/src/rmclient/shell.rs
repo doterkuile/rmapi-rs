@@ -24,7 +24,13 @@ enum ShellCommand {
     /// Exit the shell
     Exit,
     /// Alias for Exit
+    /// Alias for Exit
     Quit,
+    /// Remove a file
+    Rm {
+        /// Name of the file to remove
+        path: Option<String>,
+    },
 }
 
 pub struct Shell {
@@ -101,6 +107,7 @@ impl Shell {
             ShellCommand::Cd { path } => self.exec_cd(path).await?,
             ShellCommand::Pwd => println!("{}", self.current_path),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
+            ShellCommand::Rm { path } => self.exec_rm(path).await?,
         }
         Ok(false)
     }
@@ -147,6 +154,25 @@ impl Shell {
                 last_modified
             );
         }
+        Ok(())
+    }
+
+    async fn exec_rm(&mut self, path: Option<String>) -> Result<(), Error> {
+        let target = match &path {
+            Some(p) => self.normalize_path(p),
+            None => self.current_path.clone(),
+        };
+
+        let node = self.client.filesystem.find_node_by_path(&target)?;
+
+        self.client
+            .delete_entry(&node.document)
+            .await
+            .map_err(Error::Rmapi)?;
+
+        // Refresh file list
+        self.client.list_files().await?;
+        println!("Removed {}", target);
         Ok(())
     }
 
