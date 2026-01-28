@@ -1,7 +1,7 @@
 use crate::rmclient::error::Error;
 use crate::rmclient::token::write_token_file;
 use clap::Parser;
-use rmapi::Client;
+use rmapi::RmClient;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
@@ -31,16 +31,21 @@ enum ShellCommand {
         /// Name of the file to remove
         path: Option<String>,
     },
+    /// Upload a file
+    Put {
+        /// Local path to the file to upload
+        path: PathBuf,
+    },
 }
 
 pub struct Shell {
-    client: Client,
+    client: RmClient,
     current_path: String,
     token_file_path: PathBuf,
 }
 
 impl Shell {
-    pub fn new(client: Client, token_file_path: PathBuf) -> Self {
+    pub fn new(client: RmClient, token_file_path: PathBuf) -> Self {
         Shell {
             client,
             current_path: "/".to_string(),
@@ -108,40 +113,14 @@ impl Shell {
             ShellCommand::Pwd => println!("{}", self.current_path),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
             ShellCommand::Rm { path } => self.exec_rm(path).await?,
+            ShellCommand::Put { path } => self.exec_put(path).await?,
         }
         Ok(false)
     }
 
-    fn normalize_path(&self, path: &str) -> String {
-        let mut components = Vec::new();
-
-        if !path.starts_with('/') {
-            // Relative path, start with current components
-            for part in self.current_path.split('/').filter(|s| !s.is_empty()) {
-                components.push(part.to_string());
-            }
-        }
-
-        for part in path.split('/').filter(|s| !s.is_empty()) {
-            match part {
-                "." => {}
-                ".." => {
-                    components.pop();
-                }
-                _ => components.push(part.to_string()),
-            }
-        }
-
-        if components.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", components.join("/"))
-        }
-    }
-
     async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
         let target = match &path {
-            Some(p) => self.normalize_path(p),
+            Some(p) => rmapi::filesystem::normalize_path(p, &self.current_path),
             None => self.current_path.clone(),
         };
         let entries = self.client.filesystem.list_dir(Some(&target))?;
@@ -159,7 +138,7 @@ impl Shell {
 
     async fn exec_rm(&mut self, path: Option<String>) -> Result<(), Error> {
         let target = match &path {
-            Some(p) => self.normalize_path(p),
+            Some(p) => rmapi::filesystem::normalize_path(p, &self.current_path),
             None => self.current_path.clone(),
         };
 
@@ -178,7 +157,7 @@ impl Shell {
 
     async fn exec_cd(&mut self, path: Option<String>) -> Result<(), Error> {
         let target = match path {
-            Some(p) => self.normalize_path(&p),
+            Some(p) => rmapi::filesystem::normalize_path(&p, &self.current_path),
             None => {
                 self.current_path = "/".to_string();
                 return Ok(());
@@ -197,6 +176,20 @@ impl Shell {
                 println!("No such directory: {}", target);
             }
         }
+        Ok(())
+    }
+
+    async fn exec_put(&mut self, path: PathBuf) -> Result<(), Error> {
+        if path.extension() != Some("pdf".as_ref()) {
+            return Err(Error::Message("Only PDF files are supported".to_string()));
+        }
+        self.client
+            .put_document(&path)
+            .await
+            .map_err(Error::Rmapi)?;
+        // Refresh file list
+        self.client.list_files().await?;
+        println!("Uploaded {} as new document", path.display());
         Ok(())
     }
 }

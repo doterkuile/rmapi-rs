@@ -16,7 +16,7 @@ pub enum Commands {
     /// Start interactive shell
     Shell,
     /// Upload a file to the reMarkable Cloud
-    Upload {
+    Put {
         /// Path to the file to upload
         file_path: PathBuf,
     },

@@ -87,23 +87,7 @@ impl FileSystem {
     }
 
     pub fn cd(&mut self, path: &str) -> Result<(), Error> {
-        let new_path = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            let base = if self.current_path.ends_with('/') {
-                &self.current_path
-            } else {
-                &format!("{}/", self.current_path)
-            };
-            format!("{}{}", base, path)
-        };
-
-        // Normalize path (very basic normalization)
-        let normalized = if new_path.len() > 1 && new_path.ends_with('/') {
-            new_path[..new_path.len() - 1].to_string()
-        } else {
-            new_path
-        };
+        let normalized = normalize_path(path, &self.current_path);
 
         let node = self.find_node_by_path(&normalized)?;
         if node.is_directory() {
@@ -143,5 +127,51 @@ impl FileSystem {
         }
 
         Ok(current)
+    }
+}
+
+pub fn normalize_path(path: &str, cwd: &str) -> String {
+    let mut components = Vec::new();
+
+    if !path.starts_with('/') {
+        // Relative path, start with current components
+        for part in cwd.split('/').filter(|s| !s.is_empty()) {
+            components.push(part.to_string());
+        }
+    }
+
+    for part in path.split('/').filter(|s| !s.is_empty()) {
+        match part {
+            "." => {}
+            ".." => {
+                components.pop();
+            }
+            _ => components.push(part.to_string()),
+        }
+    }
+
+    if components.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", components.join("/"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(normalize_path("/foo/bar", "/"), "/foo/bar");
+        assert_eq!(normalize_path("bar/baz", "/foo"), "/foo/bar/baz");
+        assert_eq!(normalize_path("../baz", "/foo/bar"), "/foo/baz");
+        assert_eq!(normalize_path("./baz", "/foo"), "/foo/baz");
+        assert_eq!(normalize_path("../../..", "/foo/bar"), "/");
+        assert_eq!(normalize_path("/", "/any"), "/");
+        assert_eq!(normalize_path("", "/foo"), "/foo");
+        assert_eq!(normalize_path("..", "/"), "/");
+        assert_eq!(normalize_path("/foo/../bar", "/"), "/bar");
+        assert_eq!(normalize_path("foo//bar/", "/"), "/foo/bar");
     }
 }
