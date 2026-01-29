@@ -206,6 +206,7 @@ impl Shell {
 
         self.client
             .download_entry(node, PathBuf::from("."), recursive)
+            .map_err(Error::Rmapi)?
             .await
             .map_err(Error::Rmapi)?;
 

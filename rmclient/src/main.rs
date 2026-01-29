@@ -138,6 +138,7 @@ async fn run(args: Args) -> Result<(), Error> {
 
             client
                 .download_entry(node, PathBuf::from("."), recursive)
+                .map_err(Error::Rmapi)?
                 .await
                 .map_err(Error::Rmapi)?;
             println!("Download complete");
