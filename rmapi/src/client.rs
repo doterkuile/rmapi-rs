@@ -92,16 +92,8 @@ impl RmClient {
 
         self.modify_root_index(|root_entries| {
             let doc_id_str = doc.id.to_string();
-            let mut target_index = None;
 
-            for (i, entry) in root_entries.iter().enumerate() {
-                if entry.id == doc_id_str {
-                    target_index = Some(i);
-                    break;
-                }
-            }
-
-            if let Some(idx) = target_index {
+            if let Some(idx) = root_entries.iter().position(|e| e.id == doc_id_str) {
                 root_entries.remove(idx);
                 Ok(())
             } else {
@@ -278,7 +270,7 @@ impl RmClient {
 
         let root_resp_text = root_hash_response.text().await?;
         let root_info: serde_json::Value = serde_json::from_str(&root_resp_text)?;
-        log::info!("DEBUG: Root info: {:?}", root_info);
+        log::debug!("Root info: {:?}", root_info);
         let root_hash = root_info["hash"]
             .as_str()
             .ok_or(Error::Message("Missing hash".to_string()))?;

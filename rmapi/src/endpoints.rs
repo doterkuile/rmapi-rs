@@ -5,6 +5,7 @@ use crate::constants::{
 };
 use crate::error::Error;
 use crate::objects::{V4Entry, V4Metadata};
+use base64::Engine;
 use log;
 use reqwest::{self, Body};
 use serde::{Deserialize, Serialize};
@@ -405,7 +406,6 @@ pub async fn upload_blob(
 ) -> Result<(), Error> {
     let checksum = crc32c::crc32c(data);
     let checksum_bytes = checksum.to_be_bytes();
-    use base64::Engine;
     let content_md5 = base64::engine::general_purpose::STANDARD.encode(checksum_bytes);
     let hash_header_value = format!("crc32c={}", content_md5);
 
@@ -424,7 +424,7 @@ pub async fn upload_blob(
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         log::error!(
-            "Upload V4 NO HEADERS DEBUG failed for {} ({}): {} - {}",
+            "Upload failed for {} ({}): {} - {}",
             filename,
             hash,
             status,
