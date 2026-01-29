@@ -82,7 +82,7 @@ async fn run(args: Args) -> Result<(), Error> {
                 }
             }
 
-            let target_path = path.as_deref().unwrap_or("/");
+            let target_path = path.as_deref().unwrap_or(Path::new("/"));
             let entries = client.filesystem.list_dir(Some(target_path))?;
 
             for node in entries {
@@ -100,8 +100,8 @@ async fn run(args: Args) -> Result<(), Error> {
             let mut shell = crate::rmclient::shell::Shell::new(client, args.auth_token_file);
             shell.run().await?;
         }
-        Commands::Put { file_path } => {
-            if file_path.extension() != Some("pdf".as_ref()) {
+        Commands::Put { path } => {
+            if path.extension() != Some("pdf".as_ref()) {
                 return Err(Error::Message("Only PDF files are supported".to_string()));
             }
             let mut client = client_from_token_file(&args.auth_token_file).await?;
@@ -116,13 +116,10 @@ async fn run(args: Args) -> Result<(), Error> {
                 }
             }
 
-            client
-                .put_document(&file_path)
-                .await
-                .map_err(Error::Rmapi)?;
+            client.put_document(&path).await.map_err(Error::Rmapi)?;
             println!("Upload successful");
         }
-        Commands::Rm { name } => {
+        Commands::Rm { path } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
             if let Err(e) = client.list_files().await {
                 if e.is_unauthorized() {
@@ -135,18 +132,16 @@ async fn run(args: Args) -> Result<(), Error> {
                 }
             }
 
-            let files = client.filesystem.get_all_documents();
-            let doc = files
-                .iter()
-                .find(|d| d.display_name == name)
-                .ok_or_else(|| {
-                    Error::Rmapi(rmapi::error::Error::Message(format!(
-                        "Document not found: {}",
-                        name
-                    )))
-                })?;
+            let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
+            let node = client
+                .filesystem
+                .find_node_by_path(&normalized_path)
+                .map_err(Error::Rmapi)?;
 
-            client.delete_entry(doc).await.map_err(Error::Rmapi)?;
+            client
+                .delete_entry(&node.document)
+                .await
+                .map_err(Error::Rmapi)?;
             println!("Removal successful");
         }
     }
