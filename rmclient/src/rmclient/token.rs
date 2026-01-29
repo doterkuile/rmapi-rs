@@ -37,3 +37,20 @@ pub async fn write_token_file(client: &RmClient, auth_token_file: &Path) -> Resu
     log::debug!("Saving auth token to: {:?}", auth_token_file);
     Ok(())
 }
+
+pub async fn refetch_if_unauthorized(
+    client: &mut RmClient,
+    auth_token_file: &Path,
+) -> Result<(), Error> {
+    if let Err(e) = client.check_authentication().await {
+        if e.is_unauthorized() {
+            log::info!("Token expired, refreshing...");
+            client.refresh_token().await?;
+            write_token_file(client, auth_token_file).await?;
+            client.check_authentication().await.map_err(Error::Rmapi)?;
+        } else {
+            return Err(Error::Rmapi(e));
+        }
+    }
+    Ok(())
+}
