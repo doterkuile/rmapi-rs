@@ -25,4 +25,12 @@ pub enum Commands {
         /// Path of the file to remove
         path: PathBuf,
     },
+    /// Download a file or directory
+    Get {
+        /// Name of the file/directory to download
+        name: String,
+        /// Recursive download
+        #[arg(short, long)]
+        recursive: bool,
+    },
 }
