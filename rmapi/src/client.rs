@@ -4,15 +4,17 @@ use crate::constants::{
     ROOT_SYNC_ENDPOINT, STORAGE_API_URL_ROOT,
 };
 use crate::endpoints::{
-    fetch_blob, get_files, refresh_token, register_client, update_root, upload_blob,
+    fetch_blob, get_files, get_root_info, refresh_token, register_client, update_root, upload_blob,
 };
 use crate::error::Error;
 use crate::filesystem::FileSystem;
 use crate::objects::{Document, ExtraMetadata, IndexEntry, V4Content, V4Metadata};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::str::FromStr;
 use uuid::Uuid;
+use zip;
 
 pub struct RmClient {
     pub auth_token: String,
@@ -54,28 +56,16 @@ impl RmClient {
         Ok(())
     }
 
+    pub async fn check_authentication(&self) -> Result<(), Error> {
+        get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+        Ok(())
+    }
+
     pub async fn list_files(&mut self) -> Result<Vec<Document>, Error> {
         // 1. Get the remote root hash
-        let url = format!("{}/{}", STORAGE_API_URL_ROOT, ROOT_SYNC_ENDPOINT);
-
-        let root_hash_response = self
-            .http_client
-            .get(&url)
-            .bearer_auth(&self.auth_token)
-            .header("Accept", "application/json")
-            .header("rm-filename", "roothash")
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let root_resp_text = root_hash_response.text().await?;
-        let root_info: serde_json::Value = serde_json::from_str(&root_resp_text)?;
-        let remote_hash = root_info["hash"]
-            .as_str()
-            .ok_or(Error::Message(
-                "Missing hash field in root hash response".to_string(),
-            ))?
-            .to_string();
+        let root_info =
+            get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+        let remote_hash = root_info.hash;
         if remote_hash == self.filesystem.current_hash {
             log::debug!("Cache unchanged, using local tree");
             return Ok(self.filesystem.get_all_documents());
@@ -92,6 +82,7 @@ impl RmClient {
 
         self.modify_root_index(|root_entries| {
             let doc_id_str = doc.id.to_string();
+            let mut target_index = None;
 
             if let Some(idx) = root_entries.iter().position(|e| e.id == doc_id_str) {
                 root_entries.remove(idx);
@@ -258,30 +249,17 @@ impl RmClient {
         F: FnOnce(&mut Vec<IndexEntry>) -> Result<(), Error>,
     {
         // 1. Get root hash
-        let root_hash_response = self
-            .http_client
-            .get(format!("{}/{}", STORAGE_API_URL_ROOT, ROOT_SYNC_ENDPOINT))
-            .bearer_auth(&self.auth_token)
-            .header("Accept", "application/json")
-            .header(HEADER_RM_FILENAME, "roothash")
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let root_resp_text = root_hash_response.text().await?;
-        let root_info: serde_json::Value = serde_json::from_str(&root_resp_text)?;
-        log::debug!("Root info: {:?}", root_info);
-        let root_hash = root_info["hash"]
-            .as_str()
-            .ok_or(Error::Message("Missing hash".to_string()))?;
-        let generation = root_info["generation"].as_u64().unwrap_or(0);
+        let root_info =
+            get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+        let root_hash = root_info.hash;
+        let generation = root_info.generation;
 
         // 2. Fetch root index blob
         let root_blob = fetch_blob(
             &self.http_client,
             &self.storage_url,
             &self.auth_token,
-            root_hash,
+            &root_hash,
         )
         .await?;
         let root_content = String::from_utf8(root_blob)?;
@@ -360,5 +338,151 @@ impl RmClient {
             mime,
         )
         .await
+    }
+
+    pub async fn download_document(
+        &self,
+        doc_id: &Uuid,
+        target_basename: &std::path::Path,
+    ) -> Result<std::path::PathBuf, Error> {
+        let doc_id_str = doc_id.to_string();
+        log::info!("Downloading document: {}", doc_id_str);
+
+        // 1. Get root hash
+        let root_info =
+            get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+        let root_hash = root_info.hash;
+
+        // 2. Fetch root index blob
+        let root_blob = fetch_blob(
+            &self.http_client,
+            &self.storage_url,
+            &self.auth_token,
+            &root_hash,
+        )
+        .await?;
+        let root_content = String::from_utf8(root_blob)?;
+
+        // 3. Find entry for doc_id
+        let mut entry_hash = None;
+        for line in root_content.lines().skip(1) {
+            if line.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 3 && parts[2] == doc_id_str {
+                entry_hash = Some(parts[0].to_string());
+                break;
+            }
+        }
+
+        let entry_hash = entry_hash.ok_or(Error::Message(
+            "Document not found in root index".to_string(),
+        ))?;
+
+        // 4. Fetch docSchema
+        let doc_schema_bytes = fetch_blob(
+            &self.http_client,
+            &self.storage_url,
+            &self.auth_token,
+            &entry_hash,
+        )
+        .await?;
+        let doc_schema_content = String::from_utf8(doc_schema_bytes)?;
+
+        // 5. Parse docSchema
+        let mut subfiles = Vec::new();
+        for line in doc_schema_content.lines().skip(1) {
+            if line.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 3 {
+                subfiles.push((parts[0].to_string(), parts[2].to_string()));
+            }
+        }
+
+        // 6. Determine download type
+        let main_file = subfiles
+            .iter()
+            .find(|(_, name)| name.ends_with(".pdf") || name.ends_with(".epub"));
+
+        if let Some((hash, name)) = main_file {
+            let ext = std::path::Path::new(name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("pdf");
+            let output_path = target_basename.with_extension(ext);
+            log::info!("Downloading single file to {:?}", output_path);
+
+            let data =
+                fetch_blob(&self.http_client, &self.storage_url, &self.auth_token, hash).await?;
+            tokio::fs::write(&output_path, data).await?;
+            Ok(output_path)
+        } else {
+            let output_path = target_basename.with_extension("rmdoc");
+            log::info!("Creating rmdoc at {:?}", output_path);
+
+            // Fetch all blobs
+            let mut blob_data = Vec::new();
+            for (hash, name) in &subfiles {
+                let data = fetch_blob(&self.http_client, &self.storage_url, &self.auth_token, hash)
+                    .await?;
+                blob_data.push((name.clone(), data));
+            }
+
+            // Write ZIP (blocking)
+            let path_clone = output_path.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), Error> {
+                let file = std::fs::File::create(&path_clone)?;
+                let mut zip = zip::ZipWriter::new(file);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+
+                for (name, data) in blob_data {
+                    zip.start_file(name, options)
+                        .map_err(|e| Error::Message(e.to_string()))?;
+                    zip.write_all(&data)?;
+                }
+                zip.finish().map_err(|e| Error::Message(e.to_string()))?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| Error::Message(e.to_string()))??;
+
+            Ok(output_path)
+        }
+    }
+
+    pub fn download_entry<'a>(
+        &'a self,
+        node: &'a crate::objects::Node,
+        target_path: std::path::PathBuf,
+        recursive: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            if node.is_directory() {
+                if !recursive {
+                    return Err(Error::Message(format!(
+                        "{} is a directory. Use -r to download recursively.",
+                        node.name()
+                    )));
+                }
+                let dir_name = node.name();
+                let new_dir = target_path.join(dir_name);
+                tokio::fs::create_dir_all(&new_dir).await?;
+                log::info!("Created directory {:?}", new_dir);
+
+                for child in node.children.values() {
+                    self.download_entry(child, new_dir.clone(), true).await?;
+                }
+            } else {
+                let target_base = target_path.join(node.name());
+                self.download_document(&node.document.id, &target_base)
+                    .await?;
+                log::info!("Downloaded {}", node.name());
+            }
+            Ok(())
+        })
     }
 }
