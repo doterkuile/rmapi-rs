@@ -464,22 +464,27 @@ impl RmClient {
         node: &'a crate::objects::Node,
         target_path: std::path::PathBuf,
         recursive: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(async move {
+    ) -> Result<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>>,
+        Error,
+    > {
+        if node.is_directory() && !recursive {
+            return Err(Error::Message(format!(
+                "{} is a directory. Use -r to download recursively.",
+                node.name()
+            )));
+        }
+
+        Ok(Box::pin(async move {
             if node.is_directory() {
-                if !recursive {
-                    return Err(Error::Message(format!(
-                        "{} is a directory. Use -r to download recursively.",
-                        node.name()
-                    )));
-                }
                 let dir_name = node.name();
                 let new_dir = target_path.join(dir_name);
                 tokio::fs::create_dir_all(&new_dir).await?;
                 log::info!("Created directory {:?}", new_dir);
 
                 for child in node.children.values() {
-                    self.download_entry(child, new_dir.clone(), true).await?;
+                    let fut = self.download_entry(child, new_dir.clone(), true)?;
+                    fut.await?;
                 }
             } else {
                 let target_base = target_path.join(node.name());
@@ -488,6 +493,6 @@ impl RmClient {
                 log::info!("Downloaded {}", node.name());
             }
             Ok(())
-        })
+        }))
     }
 }
