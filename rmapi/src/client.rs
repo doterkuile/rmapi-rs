@@ -1,7 +1,6 @@
 use crate::constants::{
-    DOC_TYPE_DOCUMENT, HEADER_RM_FILENAME, MIME_TYPE_DOC_SCHEMA, MIME_TYPE_JSON,
-    MIME_TYPE_OCTET_STREAM, MIME_TYPE_PDF, MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID,
-    ROOT_SYNC_ENDPOINT, STORAGE_API_URL_ROOT,
+    DOC_TYPE_DOCUMENT, MIME_TYPE_DOC_SCHEMA, MIME_TYPE_JSON, MIME_TYPE_OCTET_STREAM, MIME_TYPE_PDF,
+    MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT,
 };
 use crate::endpoints::{
     fetch_blob, get_files, get_root_info, refresh_token, register_client, update_root, upload_blob,
@@ -82,8 +81,6 @@ impl RmClient {
 
         self.modify_root_index(|root_entries| {
             let doc_id_str = doc.id.to_string();
-            let mut target_index = None;
-
             if let Some(idx) = root_entries.iter().position(|e| e.id == doc_id_str) {
                 root_entries.remove(idx);
                 Ok(())

@@ -29,8 +29,8 @@ pub enum Commands {
     },
     /// Download a file or directory
     Get {
-        /// Name of the file/directory to download
-        name: String,
+        /// Path of the file/directory to download
+        path: PathBuf,
         /// Recursive download
         #[arg(short, long)]
         recursive: bool,

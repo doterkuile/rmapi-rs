@@ -1,5 +1,4 @@
 use crate::rmclient::error::Error;
-use crate::rmclient::token::write_token_file;
 use clap::Parser;
 use rmapi::RmClient;
 use rustyline::error::ReadlineError;
@@ -40,8 +39,8 @@ enum ShellCommand {
     },
     /// Download a file or directory
     Get {
-        /// Name of the file/directory to download
-        path: String,
+        /// Path of the file/directory to download
+        path: PathBuf,
         /// Recursive download
         #[arg(short, long)]
         recursive: bool,
@@ -117,6 +116,7 @@ impl Shell {
             ShellCommand::Rm { path } => self.exec_rm(&path).await?,
             ShellCommand::Put { path, destination } => {
                 self.exec_put(&path, destination.as_deref()).await?
+            ShellCommand::Get { path, recursive } => self.exec_get(&path, recursive).await?,
             }
         }
         Ok(false)
@@ -225,8 +225,8 @@ impl Shell {
         Ok(())
     }
 
-    async fn exec_get(&mut self, path: String, recursive: bool) -> Result<(), Error> {
-        let target = rmapi::filesystem::normalize_path(&path, &self.current_path);
+    async fn exec_get(&mut self, path: &Path, recursive: bool) -> Result<(), Error> {
+        let target = rmapi::filesystem::normalize_path(path, &self.current_path);
         let node = self
             .client
             .filesystem
