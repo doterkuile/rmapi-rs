@@ -11,13 +11,18 @@ pub enum Commands {
     /// List files in the reMarkable Cloud
     Ls {
         /// Optional path to list
-        path: Option<String>,
+        path: Option<PathBuf>,
     },
     /// Start interactive shell
     Shell,
     /// Upload a file to the reMarkable Cloud
-    Upload {
+    Put {
         /// Path to the file to upload
-        file_path: PathBuf,
+        path: PathBuf,
+    },
+    /// Remove a file or directory
+    Rm {
+        /// Path of the file to remove
+        path: PathBuf,
     },
 }

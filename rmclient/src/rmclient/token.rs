@@ -1,6 +1,6 @@
 use crate::rmclient::error::Error;
 use dirs::config_dir;
-use rmapi::Client;
+use rmapi::RmClient;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,7 @@ pub fn default_token_file_path() -> PathBuf {
         .join("rmapi/auth_token")
 }
 
-pub async fn write_token_file(client: &Client, auth_token_file: &Path) -> Result<(), Error> {
+pub async fn write_token_file(client: &RmClient, auth_token_file: &Path) -> Result<(), Error> {
     if let Some(parent) = auth_token_file.parent() {
         log::debug!("Making client config dir {:?}", parent);
         tokio::fs::create_dir_all(parent).await?;

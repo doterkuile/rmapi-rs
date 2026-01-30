@@ -1,10 +1,10 @@
 use crate::rmclient::error::Error;
 use crate::rmclient::token::write_token_file;
 use clap::Parser;
-use rmapi::Client;
+use rmapi::RmClient;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(name = "", no_binary_name = true)]
@@ -12,32 +12,43 @@ enum ShellCommand {
     /// List files in the current or specified path
     Ls {
         /// Optional path to list
-        path: Option<String>,
+        path: Option<PathBuf>,
     },
     /// Change the current directory
     Cd {
         /// Path to navigate to
-        path: Option<String>,
+        path: Option<PathBuf>,
     },
     /// Print the current working directory
     Pwd,
     /// Exit the shell
     Exit,
     /// Alias for Exit
+    /// Alias for Exit
     Quit,
+    /// Remove a file
+    Rm {
+        /// Name of the file to remove
+        path: PathBuf,
+    },
+    /// Upload a file
+    Put {
+        /// Local path to the file to upload
+        path: PathBuf,
+    },
 }
 
 pub struct Shell {
-    client: Client,
-    current_path: String,
+    client: RmClient,
+    current_path: PathBuf,
     token_file_path: PathBuf,
 }
 
 impl Shell {
-    pub fn new(client: Client, token_file_path: PathBuf) -> Self {
+    pub fn new(client: RmClient, token_file_path: PathBuf) -> Self {
         Shell {
             client,
-            current_path: "/".to_string(),
+            current_path: PathBuf::from("/"),
             token_file_path,
         }
     }
@@ -60,7 +71,7 @@ impl Shell {
             DefaultEditor::new().map_err(|e| Error::Message(e.to_string()))?;
 
         loop {
-            let prompt = format!("[{}]> ", self.current_path);
+            let prompt = format!("[{}]> ", self.current_path.display());
             match rl.readline(&prompt) {
                 Ok(line) => {
                     if self.handle_input(line, &mut rl).await? {
@@ -97,47 +108,26 @@ impl Shell {
 
     async fn handle_command(&mut self, cmd: ShellCommand) -> Result<bool, Error> {
         match cmd {
-            ShellCommand::Ls { path } => self.exec_ls(path).await?,
-            ShellCommand::Cd { path } => self.exec_cd(path).await?,
-            ShellCommand::Pwd => println!("{}", self.current_path),
+            ShellCommand::Ls { path } => self.exec_ls(path.as_deref()).await?,
+            ShellCommand::Cd { path } => self.exec_cd(path.as_deref()).await?,
+            ShellCommand::Pwd => println!("{}", self.current_path.display()),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
+            ShellCommand::Rm { path } => self.exec_rm(&path).await?,
+            ShellCommand::Put { path } => self.exec_put(&path).await?,
         }
         Ok(false)
     }
 
-    fn normalize_path(&self, path: &str) -> String {
-        let mut components = Vec::new();
-
-        if !path.starts_with('/') {
-            // Relative path, start with current components
-            for part in self.current_path.split('/').filter(|s| !s.is_empty()) {
-                components.push(part.to_string());
-            }
-        }
-
-        for part in path.split('/').filter(|s| !s.is_empty()) {
-            match part {
-                "." => {}
-                ".." => {
-                    components.pop();
-                }
-                _ => components.push(part.to_string()),
-            }
-        }
-
-        if components.is_empty() {
-            "/".to_string()
+    async fn exec_ls(&mut self, path: Option<&Path>) -> Result<(), Error> {
+        let target_buf;
+        let target = if let Some(p) = path {
+            target_buf = rmapi::filesystem::normalize_path(p, &self.current_path);
+            &target_buf
         } else {
-            format!("/{}", components.join("/"))
-        }
-    }
-
-    async fn exec_ls(&mut self, path: Option<String>) -> Result<(), Error> {
-        let target = match &path {
-            Some(p) => self.normalize_path(p),
-            None => self.current_path.clone(),
+            &self.current_path
         };
-        let entries = self.client.filesystem.list_dir(Some(&target))?;
+
+        let entries = self.client.filesystem.list_dir(Some(target))?;
         for node in entries {
             let suffix = if node.is_directory() { "/" } else { "" };
             let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");
@@ -150,11 +140,32 @@ impl Shell {
         Ok(())
     }
 
-    async fn exec_cd(&mut self, path: Option<String>) -> Result<(), Error> {
+    async fn exec_rm(&mut self, path: &Path) -> Result<(), Error> {
+        let target = rmapi::filesystem::normalize_path(path, &self.current_path);
+
+        if target == Path::new("/") {
+            println!("Error: Cannot remove the root directory.");
+            return Ok(());
+        }
+
+        let node = self.client.filesystem.find_node_by_path(&target)?;
+
+        self.client
+            .delete_entry(&node.document)
+            .await
+            .map_err(Error::Rmapi)?;
+
+        // Refresh file list
+        self.client.list_files().await?;
+        println!("Removed {}", target.display());
+        Ok(())
+    }
+
+    async fn exec_cd(&mut self, path: Option<&Path>) -> Result<(), Error> {
         let target = match path {
-            Some(p) => self.normalize_path(&p),
+            Some(p) => rmapi::filesystem::normalize_path(p, &self.current_path),
             None => {
-                self.current_path = "/".to_string();
+                self.current_path = PathBuf::from("/");
                 return Ok(());
             }
         };
@@ -164,13 +175,24 @@ impl Shell {
                 if node.is_directory() {
                     self.current_path = target;
                 } else {
-                    println!("Not a directory: {}", target);
+                    println!("Not a directory: {}", target.display());
                 }
             }
             Err(_) => {
-                println!("No such directory: {}", target);
+                println!("No such directory: {}", target.display());
             }
         }
+        Ok(())
+    }
+
+    async fn exec_put(&mut self, path: &Path) -> Result<(), Error> {
+        if path.extension() != Some("pdf".as_ref()) {
+            return Err(Error::Message("Only PDF files are supported".to_string()));
+        }
+        self.client.put_document(path).await.map_err(Error::Rmapi)?;
+        // Refresh file list
+        self.client.list_files().await?;
+        println!("Uploaded {} as new document", path.display());
         Ok(())
     }
 }

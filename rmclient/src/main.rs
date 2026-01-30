@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::{Path, PathBuf};
 
-use rmapi::Client;
+use rmapi::RmClient;
 
 mod rmclient;
 use crate::rmclient::commands::Commands;
@@ -24,7 +24,7 @@ struct Args {
     command: Commands,
 }
 
-async fn client_from_token_file(auth_token_file: &Path) -> Result<Client, Error> {
+async fn client_from_token_file(auth_token_file: &Path) -> Result<RmClient, Error> {
     if !auth_token_file.exists() {
         Err(Error::TokenFileNotFound)
     } else if !auth_token_file.is_file() {
@@ -40,10 +40,10 @@ async fn client_from_token_file(auth_token_file: &Path) -> Result<Client, Error>
         if let Ok(auth_data) =
             serde_json::from_str::<crate::rmclient::token::AuthData>(&file_content)
         {
-            Ok(Client::from_token(&auth_data.user_token, Some(auth_data.device_token)).await?)
+            Ok(RmClient::from_token(&auth_data.user_token, Some(auth_data.device_token)).await?)
         } else {
             // Fallback to legacy plain text token (treat as user token only)
-            Ok(Client::from_token(&file_content.trim(), None).await?)
+            Ok(RmClient::from_token(&file_content.trim(), None).await?)
         }
     }
 }
@@ -62,7 +62,7 @@ async fn main() {
 async fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Commands::Register { code } => {
-            let client = Client::new(&code).await?;
+            let client = RmClient::new(&code).await?;
             write_token_file(&client, &args.auth_token_file).await?;
             println!(
                 "Registration successful! Token saved to {:?}",
@@ -82,7 +82,7 @@ async fn run(args: Args) -> Result<(), Error> {
                 }
             }
 
-            let target_path = path.as_deref().unwrap_or("/");
+            let target_path = path.as_deref().unwrap_or(Path::new("/"));
             let entries = client.filesystem.list_dir(Some(target_path))?;
 
             for node in entries {
@@ -100,8 +100,49 @@ async fn run(args: Args) -> Result<(), Error> {
             let mut shell = crate::rmclient::shell::Shell::new(client, args.auth_token_file);
             shell.run().await?;
         }
-        Commands::Upload { file_path: _ } => {
-            println!("Upload is currently not implemented for Sync V4");
+        Commands::Put { path } => {
+            if path.extension() != Some("pdf".as_ref()) {
+                return Err(Error::Message("Only PDF files are supported".to_string()));
+            }
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            if let Err(e) = client.list_files().await {
+                if e.is_unauthorized() {
+                    log::info!("Token expired, refreshing...");
+                    client.refresh_token().await?;
+                    write_token_file(&client, &args.auth_token_file).await?;
+                    client.list_files().await?;
+                } else {
+                    return Err(Error::Rmapi(e));
+                }
+            }
+
+            client.put_document(&path).await.map_err(Error::Rmapi)?;
+            println!("Upload successful");
+        }
+        Commands::Rm { path } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            if let Err(e) = client.list_files().await {
+                if e.is_unauthorized() {
+                    log::info!("Token expired, refreshing...");
+                    client.refresh_token().await?;
+                    write_token_file(&client, &args.auth_token_file).await?;
+                    client.list_files().await?;
+                } else {
+                    return Err(Error::Rmapi(e));
+                }
+            }
+
+            let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
+            let node = client
+                .filesystem
+                .find_node_by_path(&normalized_path)
+                .map_err(Error::Rmapi)?;
+
+            client
+                .delete_entry(&node.document)
+                .await
+                .map_err(Error::Rmapi)?;
+            println!("Removal successful");
         }
     }
     Ok(())

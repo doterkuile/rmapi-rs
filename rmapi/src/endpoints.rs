@@ -1,67 +1,17 @@
+use crate::constants::{
+    DOC_UPLOAD_ENDPOINT, GROUP_AUTH, HEADER_RM_FILENAME, HEADER_RM_META, HEADER_RM_SOURCE,
+    HEADER_X_GOOG_HASH, NEW_CLIENT_URL, NEW_TOKEN_URL, ROOT_SYNC_ENDPOINT, STORAGE_API_URL_ROOT,
+    STORAGE_DISCOVERY_API_URL, STORAGE_DISCOVERY_API_VERSION, WEBAPP_API_URL_ROOT,
+};
 use crate::error::Error;
-use const_format::formatcp;
+use crate::objects::{V4Entry, V4Metadata};
+use base64::Engine;
 use log;
 use reqwest::{self, Body};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use uuid::Uuid;
-
-const AUTH_API_URL_ROOT: &str = "https://webapp-prod.cloud.remarkable.engineering";
-const AUTH_API_VERSION: &str = "2";
-const NEW_CLIENT_URL: &str =
-    formatcp!("{AUTH_API_URL_ROOT}/token/json/{AUTH_API_VERSION}/device/new");
-const NEW_TOKEN_URL: &str = formatcp!("{AUTH_API_URL_ROOT}/token/json/{AUTH_API_VERSION}/user/new");
-
-const SERVICE_DISCOVERY_API_URL_ROOT: &str =
-    "https://service-manager-production-dot-remarkable-production.appspot.com";
-const STORAGE_API_VERSION: &str = "1";
-const STORAGE_DISCOVERY_API_URL: &str = formatcp!(
-    "{SERVICE_DISCOVERY_API_URL_ROOT}/service/json/{STORAGE_API_VERSION}/document-storage"
-);
-const GROUP_AUTH: &str = "auth0%7C5a68dc51cb30df1234567890";
-const STORAGE_DISCOVERY_API_VERSION: &str = "2";
-
-pub const STORAGE_API_URL_ROOT: &str = "https://internal.cloud.remarkable.com";
-pub const WEBAPP_API_URL_ROOT: &str = "https://web.eu.tectonic.remarkable.com";
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct V4Metadata {
-    #[serde(rename = "visibleName", default)]
-    pub visible_name: String,
-    #[serde(rename = "type", default)]
-    pub doc_type: String,
-    #[serde(default)]
-    pub parent: String,
-    #[serde(rename = "lastModified", default)]
-    pub last_modified: String,
-    #[serde(default)]
-    pub version: u64,
-    #[serde(default)]
-    pub pinned: bool,
-    #[serde(default)]
-    pub deleted: bool,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct V4Entry {
-    hash: String,
-    doc_type: String,
-    doc_id: String,
-    subfiles: u32,
-    size: u64,
-}
-
-const DOC_UPLOAD_ENDPOINT: &str = "doc/v2/files";
-pub const ROOT_SYNC_ENDPOINT: &str = "sync/v4/root";
-// const FILE_SYNC_ENDPOINT: &str = "sync/v3/files";
-
-// const ITEM_LIST_ENDPOINT: &str = "document-storage/json/2/docs";
-// const ITEM_ENDPOINT: &str = "document-storage/json/2/";
-// const UPLOAD_REQUEST_ENDPOINT: &str = "document-storage/json/2/upload/request";
-// const UPLOAD_STATUS_ENDPOINT: &str = "document-storage/json/2/upload/update-status";
-// const DELETE_ENDPOINT: &str = "/document-storage/json/2/delete";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(non_snake_case)]
@@ -71,29 +21,7 @@ struct ClientRegistation {
     deviceID: String,
 }
 
-/// Registers a new client with the reMarkable cloud service.
-///
-/// This function takes a registration code and sends a request to the reMarkable
-/// authentication API to register a new client device. It generates a new UUID
-/// for the device ID.
-///
-/// # Arguments
-///
-/// * `code` - A string that holds the registration code provided by reMarkable.
-///
-/// # Returns
-///
-/// * `Result<String, Error>` - Returns Ok with the response text on success,
-///   or an Error if the registration process fails.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// * The HTTP request fails
-/// * The server responds with an error status
-/// * The response cannot be parsed
-
-pub async fn register_client(code: &str) -> Result<String, Error> {
+pub async fn register_client(client: &reqwest::Client, code: &str) -> Result<String, Error> {
     log::info!("Registering client with code: {}", code);
     let registration_info = ClientRegistation {
         code: code.to_string(),
@@ -101,7 +29,6 @@ pub async fn register_client(code: &str) -> Result<String, Error> {
         deviceID: Uuid::new_v4().to_string(),
     };
 
-    let client = reqwest::Client::new();
     let response = client
         .post(NEW_CLIENT_URL)
         .header("Content-Type", "application/json")
@@ -124,29 +51,8 @@ pub async fn register_client(code: &str) -> Result<String, Error> {
     }
 }
 
-/// Refreshes the authentication token for the reMarkable cloud service.
-///
-/// This function takes an existing authentication token and sends a request to
-/// the reMarkable authentication API to obtain a new, refreshed token.
-///
-/// # Arguments
-///
-/// * `auth_token` - A string that holds the current authentication token.
-///
-/// # Returns
-///
-/// * `Result<String, Error>` - Returns Ok with the new token as a string on success,
-///   or an Error if the refresh process fails.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// * The HTTP request fails
-/// * The server responds with an error status
-/// * The response cannot be parsed
-pub async fn refresh_token(auth_token: &str) -> Result<String, Error> {
+pub async fn refresh_token(client: &reqwest::Client, auth_token: &str) -> Result<String, Error> {
     log::info!("Refreshing token");
-    let client = reqwest::Client::new();
     let response = client
         .post(NEW_TOKEN_URL)
         .bearer_auth(auth_token)
@@ -177,14 +83,13 @@ struct StorageInfo {
     Host: String,
 }
 
-pub async fn discover_storage(auth_token: &str) -> Result<String, Error> {
+pub async fn discover_storage(client: &reqwest::Client, auth_token: &str) -> Result<String, Error> {
     log::info!("Discovering storage host");
     let discovery_request = vec![
         ("environment", "production"),
         ("group", GROUP_AUTH),
         ("apiVer", STORAGE_DISCOVERY_API_VERSION),
     ];
-    let client = reqwest::Client::new();
     let response = client
         .get(STORAGE_DISCOVERY_API_URL)
         .bearer_auth(auth_token)
@@ -209,14 +114,17 @@ pub async fn discover_storage(auth_token: &str) -> Result<String, Error> {
     }
 }
 
-pub async fn sync_root(storage_url: &str, auth_token: &str) -> Result<String, Error> {
+pub async fn sync_root(
+    client: &reqwest::Client,
+    storage_url: &str,
+    auth_token: &str,
+) -> Result<String, Error> {
     log::info!("Listing items in the rmCloud");
-    let client = reqwest::Client::new();
     let response = client
         .get(format!("{}/{}", storage_url, ROOT_SYNC_ENDPOINT))
         .bearer_auth(auth_token)
         .header("Accept", "application/json")
-        .header("rm-filename", "roothash")
+        .header(HEADER_RM_FILENAME, "roothash")
         .send()
         .await?;
 
@@ -235,40 +143,17 @@ pub async fn sync_root(storage_url: &str, auth_token: &str) -> Result<String, Er
     }
 }
 
-// pub async fn put_content(storage_url: &str, auth_token: &str, content) {
-//     log::info!("Listing items in the rmCloud");
-//     let client = reqwest::Client::new();
-//     let response = client
-//         .get(format!("{}/{}", storage_url, ROOT_SYNC_ENDPOINT))
-//         .bearer_auth(auth_token)
-//         .header("Accept", "application/json")
-//         .header("rm-filename", "roothash")
-//         .send()
-//         .await?;
-
-//     log::debug!("{:?}", response);
-
-//     match response.error_for_status() {
-//         Ok(res) => {
-//             let root_hash = res.text().await?;
-//             log::debug!("Root Hash: {}", root_hash);
-//             Ok(root_hash)
-//         }
-//         Err(e) => {
-//             log::error!("Error listing items: {}", e);
-//             Err(Error::from(e))
-//         }
-//     }
-// }
-
-pub async fn upload_request(_: &str, auth_token: &str) -> Result<String, Error> {
+pub async fn upload_request(
+    client: &reqwest::Client,
+    _: &str,
+    auth_token: &str,
+) -> Result<String, Error> {
     log::info!("Requesting to upload a document to the rmCloud");
-    let client = reqwest::Client::new();
     let response = client
         .get(format!("{}/{}", WEBAPP_API_URL_ROOT, DOC_UPLOAD_ENDPOINT))
         .bearer_auth(auth_token)
         .header("Accept", "application/json")
-        .header("rm-Source", "WebLibrary")
+        .header(HEADER_RM_SOURCE, "WebLibrary")
         .header("Content-Type", "application/pdf")
         .send()
         .await?;
@@ -288,18 +173,22 @@ pub async fn upload_request(_: &str, auth_token: &str) -> Result<String, Error> 
     }
 }
 
-pub async fn upload_file(_: &str, auth_token: &str, file: File) -> Result<String, Error> {
+pub async fn upload_file(
+    client: &reqwest::Client,
+    _: &str,
+    auth_token: &str,
+    file: File,
+) -> Result<String, Error> {
     log::info!("Requesting to upload a document to the rmCloud");
     let stream = FramedRead::new(file, BytesCodec::new());
     let body = Body::wrap_stream(stream);
 
-    let client = reqwest::Client::new();
     let response = client
         .post(format!("{}/{}", WEBAPP_API_URL_ROOT, DOC_UPLOAD_ENDPOINT))
         .bearer_auth(auth_token)
         .header("Accept-Encoding", "gzip, deflate, br")
-        .header("rm-Source", "WebLibrary")
-        .header("rm-Meta", "")
+        .header(HEADER_RM_SOURCE, "WebLibrary")
+        .header(HEADER_RM_META, "")
         .header("Content-Type", "application/pdf")
         .body(body)
         .send()
@@ -321,19 +210,18 @@ pub async fn upload_file(_: &str, auth_token: &str, file: File) -> Result<String
 }
 
 pub async fn get_files(
+    client: &reqwest::Client,
     _storage_url: &str, // Ignored because Sync V4 needs internal host
     auth_token: &str,
 ) -> Result<(Vec<crate::objects::Document>, String), Error> {
     log::info!("Requesting files version Sync V4");
-
-    let client = reqwest::Client::new();
 
     // 1. Get the root hash
     let root_hash_response = client
         .get(format!("{}/{}", STORAGE_API_URL_ROOT, ROOT_SYNC_ENDPOINT))
         .bearer_auth(auth_token)
         .header("Accept", "application/json")
-        .header("rm-filename", "roothash")
+        .header(HEADER_RM_FILENAME, "roothash")
         .send()
         .await?
         .error_for_status()?;
@@ -362,7 +250,7 @@ pub async fn get_files(
             STORAGE_API_URL_ROOT, root_hash
         ))
         .bearer_auth(auth_token)
-        .header("rm-filename", "roothash")
+        .header(HEADER_RM_FILENAME, "roothash")
         .send()
         .await?
         .error_for_status()?;
@@ -406,7 +294,7 @@ pub async fn get_files(
                     STORAGE_API_URL_ROOT, entry.hash
                 ))
                 .bearer_auth(&auth_token)
-                .header("rm-filename", format!("{}.docSchema", entry.doc_id))
+                .header(HEADER_RM_FILENAME, format!("{}.docSchema", entry.doc_id))
                 .send()
                 .await;
 
@@ -431,7 +319,7 @@ pub async fn get_files(
             let metadata_response = client
                 .get(format!("{}/sync/v3/files/{}", STORAGE_API_URL_ROOT, m_hash))
                 .bearer_auth(&auth_token)
-                .header("rm-filename", format!("{}.metadata", entry.doc_id))
+                .header(HEADER_RM_FILENAME, format!("{}.metadata", entry.doc_id))
                 .send()
                 .await
                 .ok()?;
@@ -488,4 +376,89 @@ pub async fn get_files(
     }
 
     Ok((documents, root_hash))
+}
+
+pub async fn fetch_blob(
+    client: &reqwest::Client,
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+) -> Result<Vec<u8>, Error> {
+    let response = client
+        .get(format!("{}/sync/v3/files/{}", base_url, hash))
+        .bearer_auth(auth_token)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let bytes = response.bytes().await?;
+    Ok(bytes.to_vec())
+}
+
+pub async fn upload_blob(
+    client: &reqwest::Client,
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+    filename: &str,
+    data: &[u8],
+    content_type: &str,
+) -> Result<(), Error> {
+    let checksum = crc32c::crc32c(data);
+    let checksum_bytes = checksum.to_be_bytes();
+    let content_md5 = base64::engine::general_purpose::STANDARD.encode(checksum_bytes);
+    let hash_header_value = format!("crc32c={}", content_md5);
+
+    let response = client
+        .put(format!("{}/sync/v3/files/{}", base_url, hash))
+        .bearer_auth(auth_token)
+        .header(HEADER_RM_FILENAME, filename)
+        .header(HEADER_X_GOOG_HASH, hash_header_value)
+        .header("Content-Type", content_type)
+        .header("Content-Length", data.len().to_string())
+        .body(data.to_vec())
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        log::error!(
+            "Upload failed for {} ({}): {} - {}",
+            filename,
+            hash,
+            status,
+            text
+        );
+        return Err(Error::Message(format!(
+            "Upload failed: {} - {}",
+            status, text
+        )));
+    }
+    Ok(())
+}
+
+pub async fn update_root(
+    client: &reqwest::Client,
+    base_url: &str,
+    auth_token: &str,
+    hash: &str,
+    generation: u64,
+) -> Result<(), Error> {
+    let body = serde_json::json!({
+        "hash": hash,
+        "generation": generation,
+        "broadcast": true
+    });
+
+    client
+        .put(format!("{}/{}", base_url, ROOT_SYNC_ENDPOINT))
+        .bearer_auth(auth_token)
+        .header("Content-Type", "application/json")
+        .header(HEADER_RM_FILENAME, "roothash")
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }

@@ -62,3 +62,9 @@ impl From<serde_json::Error> for Error {
         Error::SerdeJson(err)
     }
 }
+
+impl From<std::string::FromUtf8Error> for Error {
+    fn from(err: std::string::FromUtf8Error) -> Error {
+        Error::Message(err.to_string())
+    }
+}
