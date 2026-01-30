@@ -100,7 +100,7 @@ async fn run(args: Args) -> Result<(), Error> {
             let mut shell = crate::rmclient::shell::Shell::new(client, args.auth_token_file);
             shell.run().await?;
         }
-        Commands::Put { path } => {
+        Commands::Put { path, destination } => {
             if path.extension() != Some("pdf".as_ref()) {
                 return Err(Error::Message("Only PDF files are supported".to_string()));
             }
@@ -115,8 +115,28 @@ async fn run(args: Args) -> Result<(), Error> {
                     return Err(Error::Rmapi(e));
                 }
             }
+            let parent_id = match destination {
+                Some(dest) if !dest.as_os_str().is_empty() => {
+                    let normalized = rmapi::filesystem::normalize_path(&dest, Path::new("/"));
+                    let node = client
+                        .filesystem
+                        .find_node_by_path(&normalized)
+                        .map_err(Error::Rmapi)?;
+                    if !node.is_directory() {
+                        return Err(Error::Message(format!(
+                            "Destination is not a directory: {}",
+                            dest.display()
+                        )));
+                    }
+                    Some(node.id().to_string())
+                }
+                _ => None,
+            };
 
-            client.put_document(&path).await.map_err(Error::Rmapi)?;
+            client
+                .put_document(&path, parent_id.as_deref())
+                .await
+                .map_err(Error::Rmapi)?;
             println!("Upload successful");
         }
         Commands::Rm { path } => {

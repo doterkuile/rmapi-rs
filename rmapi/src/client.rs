@@ -108,7 +108,11 @@ impl RmClient {
         Ok(())
     }
 
-    pub async fn put_document(&mut self, local_path: &std::path::Path) -> Result<(), Error> {
+    pub async fn put_document(
+        &mut self,
+        local_path: &std::path::Path,
+        parent_id: Option<&str>,
+    ) -> Result<(), Error> {
         let uuid = Uuid::new_v4().to_string();
         let display_name = local_path
             .file_name()
@@ -126,7 +130,7 @@ impl RmClient {
         let metadata = V4Metadata {
             visible_name: display_name.to_string(),
             doc_type: DOC_TYPE_DOCUMENT.to_string(),
-            parent: "".to_string(),
+            parent: parent_id.unwrap_or("").to_string(),
             created_time: timestamp.clone(),
             last_modified: timestamp.clone(),
             version: 0,
@@ -241,7 +245,8 @@ impl RmClient {
 
         // Update Root
         let total_size = pdf_size + metadata_size + content_size + pagedata_size;
-        let mut new_entry = IndexEntry::new(doc_hash, ROOT_ID.to_string(), uuid, total_size);
+        let index_parent = parent_id.unwrap_or(ROOT_ID);
+        let mut new_entry = IndexEntry::new(doc_hash, index_parent.to_string(), uuid, total_size);
         new_entry.unknown_count = MSG_UNKNOWN_COUNT_4.to_string();
 
         self.modify_root_index(move |root_entries| {
