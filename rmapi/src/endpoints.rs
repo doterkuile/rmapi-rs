@@ -114,24 +114,12 @@ pub async fn get_root_info(
         .await?;
 
     log::debug!("{:?}", response);
-
     let res = response.error_for_status().map_err(Error::from)?;
-    let root_resp_text = res.text().await?;
-    log::debug!("Root response: {}", root_resp_text);
-
-    let root_json: serde_json::Value = serde_json::from_str(&root_resp_text).map_err(|e| {
+    let root_info = res.json::<RootInfo>().await.map_err(|e| {
         log::error!("Failed to parse root JSON: {}", e);
         Error::from(e)
     })?;
-
-    let hash = root_json["hash"]
-        .as_str()
-        .ok_or_else(|| Error::Message("Missing hash in root info".to_string()))?
-        .to_string();
-
-    let generation = root_json["generation"].as_u64().unwrap_or(0);
-
-    Ok(RootInfo { hash, generation })
+    Ok(root_info)
 }
 
 pub async fn upload_request(
