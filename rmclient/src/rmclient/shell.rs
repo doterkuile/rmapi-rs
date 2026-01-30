@@ -1,3 +1,4 @@
+use crate::rmclient::actions;
 use crate::rmclient::error::Error;
 use clap::Parser;
 use rmapi::RmClient;
@@ -116,8 +117,8 @@ impl Shell {
             ShellCommand::Rm { path } => self.exec_rm(&path).await?,
             ShellCommand::Put { path, destination } => {
                 self.exec_put(&path, destination.as_deref()).await?
-            ShellCommand::Get { path, recursive } => self.exec_get(&path, recursive).await?,
             }
+            ShellCommand::Get { path, recursive } => self.exec_get(&path, recursive).await?,
         }
         Ok(false)
     }
@@ -131,17 +132,7 @@ impl Shell {
             &self.current_path
         };
 
-        let entries = self.client.filesystem.list_dir(Some(target))?;
-        for node in entries {
-            let suffix = if node.is_directory() { "/" } else { "" };
-            let last_modified = node.document.last_modified.format("%Y-%m-%d %H:%M:%S");
-            println!(
-                "{:<40}  {}",
-                format!("{}{}", node.name(), suffix),
-                last_modified
-            );
-        }
-        Ok(())
+        actions::ls(&self.client, target).await
     }
 
     async fn exec_rm(&mut self, path: &Path) -> Result<(), Error> {
@@ -152,12 +143,7 @@ impl Shell {
             return Ok(());
         }
 
-        let node = self.client.filesystem.find_node_by_path(&target)?;
-
-        self.client
-            .delete_entry(&node.document)
-            .await
-            .map_err(Error::Rmapi)?;
+        actions::rm(&self.client, &target).await?;
 
         // Refresh file list
         self.client.list_files().await?;
@@ -174,72 +160,29 @@ impl Shell {
             }
         };
 
-        match self.client.filesystem.find_node_by_path(&target) {
-            Ok(node) => {
-                if node.is_directory() {
-                    self.current_path = target;
-                } else {
-                    println!("Not a directory: {}", target.display());
-                }
-            }
-            Err(_) => {
-                println!("No such directory: {}", target.display());
-            }
+        match actions::cd(&self.client, &target) {
+            Ok(_) => self.current_path = target,
+            Err(e) => println!("{}", e),
         }
         Ok(())
     }
 
     async fn exec_put(&mut self, path: &Path, destination: Option<&Path>) -> Result<(), Error> {
-        if path.extension() != Some("pdf".as_ref()) {
-            return Err(Error::Message("Only PDF files are supported".to_string()));
-        }
-
-        let target = if let Some(dest) = destination {
-            rmapi::filesystem::normalize_path(dest, &self.current_path)
+        let destination_path = if let Some(dest) = destination {
+            Some(rmapi::filesystem::normalize_path(dest, &self.current_path))
         } else {
-            self.current_path.clone()
+            None
         };
 
-        let parent_id = {
-            let node = self.client.filesystem.find_node_by_path(&target)?;
-            if !node.is_directory() {
-                return Err(Error::Message(format!(
-                    "Destination is not a directory: {}",
-                    target.display()
-                )));
-            }
-            node.id().to_string()
-        };
+        actions::put(&mut self.client, path, destination_path.as_deref()).await?;
 
-        self.client
-            .put_document(path, Some(&parent_id))
-            .await
-            .map_err(Error::Rmapi)?;
         // Refresh file list
         self.client.list_files().await?;
-        println!(
-            "Uploaded {} as new document to {}",
-            path.display(),
-            target.display()
-        );
         Ok(())
     }
 
     async fn exec_get(&mut self, path: &Path, recursive: bool) -> Result<(), Error> {
         let target = rmapi::filesystem::normalize_path(path, &self.current_path);
-        let node = self
-            .client
-            .filesystem
-            .find_node_by_path(&target)
-            .map_err(Error::from)?; // Error converts from rmapi::Error via From impl
-
-        self.client
-            .download_entry(node, PathBuf::from("."), recursive)
-            .map_err(Error::Rmapi)?
-            .await
-            .map_err(Error::Rmapi)?;
-
-        println!("Download complete");
-        Ok(())
+        actions::get(&self.client, &target, recursive).await
     }
 }
