@@ -1,5 +1,4 @@
 use crate::rmclient::error::Error;
-use crate::rmclient::token::write_token_file;
 use clap::Parser;
 use rmapi::RmClient;
 use rustyline::error::ReadlineError;
@@ -36,6 +35,14 @@ enum ShellCommand {
         /// Local path to the file to upload
         path: PathBuf,
     },
+    /// Download a file or directory
+    Get {
+        /// Path of the file/directory to download
+        path: PathBuf,
+        /// Recursive download
+        #[arg(short, long)]
+        recursive: bool,
+    },
 }
 
 pub struct Shell {
@@ -56,16 +63,8 @@ impl Shell {
     pub async fn run(&mut self) -> Result<(), Error> {
         println!("Welcome to rmapi-rs shell!");
         println!("Loading file tree...");
-        if let Err(e) = self.client.list_files().await {
-            if e.is_unauthorized() {
-                println!("Token expired, refreshing...");
-                self.client.refresh_token().await?;
-                write_token_file(&self.client, &self.token_file_path).await?;
-                self.client.list_files().await?;
-            } else {
-                return Err(Error::from(e));
-            }
-        }
+        crate::rmclient::token::refetch_if_unauthorized(&mut self.client, &self.token_file_path)
+            .await?;
 
         let mut rl: DefaultEditor =
             DefaultEditor::new().map_err(|e| Error::Message(e.to_string()))?;
@@ -114,6 +113,7 @@ impl Shell {
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
             ShellCommand::Rm { path } => self.exec_rm(&path).await?,
             ShellCommand::Put { path } => self.exec_put(&path).await?,
+            ShellCommand::Get { path, recursive } => self.exec_get(&path, recursive).await?,
         }
         Ok(false)
     }
@@ -193,6 +193,24 @@ impl Shell {
         // Refresh file list
         self.client.list_files().await?;
         println!("Uploaded {} as new document", path.display());
+        Ok(())
+    }
+
+    async fn exec_get(&mut self, path: &Path, recursive: bool) -> Result<(), Error> {
+        let target = rmapi::filesystem::normalize_path(path, &self.current_path);
+        let node = self
+            .client
+            .filesystem
+            .find_node_by_path(&target)
+            .map_err(Error::from)?;
+
+        self.client
+            .download_entry(node, PathBuf::from("."), recursive)
+            .map_err(Error::Rmapi)?
+            .await
+            .map_err(Error::Rmapi)?;
+
+        println!("Download complete");
         Ok(())
     }
 }
