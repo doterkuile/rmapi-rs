@@ -430,18 +430,17 @@ impl RmClient {
 
             // Write ZIP (blocking)
             let path_clone = output_path.clone();
-            tokio::task::spawn_blocking(move || -> Result<(), Error> {
+            tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
                 let file = std::fs::File::create(&path_clone)?;
                 let mut zip = zip::ZipWriter::new(file);
                 let options = zip::write::FileOptions::default()
                     .compression_method(zip::CompressionMethod::Stored);
 
                 for (name, data) in blob_data {
-                    zip.start_file(name, options)
-                        .map_err(|e| Error::Message(e.to_string()))?;
+                    zip.start_file(name, options)?;
                     zip.write_all(&data)?;
                 }
-                zip.finish().map_err(|e| Error::Message(e.to_string()))?;
+                zip.finish()?;
                 Ok(())
             })
             .await

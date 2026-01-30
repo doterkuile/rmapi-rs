@@ -124,7 +124,6 @@ fn default_text_scale() -> f32 {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
 pub struct ClientRegistration {
     pub code: String,
     #[serde(rename = "deviceDesc")]
