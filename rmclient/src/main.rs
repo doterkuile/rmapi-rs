@@ -120,20 +120,16 @@ async fn run(args: Args) -> Result<(), Error> {
                 .map_err(Error::Rmapi)?;
             println!("Removal successful");
         }
-        Commands::Get { name, recursive } => {
+        Commands::Get { path, recursive } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
             crate::rmclient::token::refetch_if_unauthorized(&mut client, &args.auth_token_file)
                 .await?;
 
-            let path = if name.starts_with('/') {
-                name.clone()
-            } else {
-                format!("/{}", name)
-            };
+            let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
 
             let node = client
                 .filesystem
-                .find_node_by_path(&path)
+                .find_node_by_path(&normalized_path)
                 .map_err(Error::Rmapi)?;
 
             client
