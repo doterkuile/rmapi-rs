@@ -35,6 +35,8 @@ enum ShellCommand {
     Put {
         /// Local path to the file to upload
         path: PathBuf,
+        /// Optional target directory (defaults to current directory)
+        destination: Option<PathBuf>,
     },
 }
 
@@ -113,7 +115,9 @@ impl Shell {
             ShellCommand::Pwd => println!("{}", self.current_path.display()),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
             ShellCommand::Rm { path } => self.exec_rm(&path).await?,
-            ShellCommand::Put { path } => self.exec_put(&path).await?,
+            ShellCommand::Put { path, destination } => {
+                self.exec_put(&path, destination.as_deref()).await?
+            }
         }
         Ok(false)
     }
@@ -185,14 +189,39 @@ impl Shell {
         Ok(())
     }
 
-    async fn exec_put(&mut self, path: &Path) -> Result<(), Error> {
+    async fn exec_put(&mut self, path: &Path, destination: Option<&Path>) -> Result<(), Error> {
         if path.extension() != Some("pdf".as_ref()) {
             return Err(Error::Message("Only PDF files are supported".to_string()));
         }
-        self.client.put_document(path).await.map_err(Error::Rmapi)?;
+
+        let target = if let Some(dest) = destination {
+            rmapi::filesystem::normalize_path(dest, &self.current_path)
+        } else {
+            self.current_path.clone()
+        };
+
+        let parent_id = {
+            let node = self.client.filesystem.find_node_by_path(&target)?;
+            if !node.is_directory() {
+                return Err(Error::Message(format!(
+                    "Destination is not a directory: {}",
+                    target.display()
+                )));
+            }
+            node.id().to_string()
+        };
+
+        self.client
+            .put_document(path, Some(&parent_id))
+            .await
+            .map_err(Error::Rmapi)?;
         // Refresh file list
         self.client.list_files().await?;
-        println!("Uploaded {} as new document", path.display());
+        println!(
+            "Uploaded {} as new document to {}",
+            path.display(),
+            target.display()
+        );
         Ok(())
     }
 }

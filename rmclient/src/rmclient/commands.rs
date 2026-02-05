@@ -19,6 +19,8 @@ pub enum Commands {
     Put {
         /// Path to the file to upload
         path: PathBuf,
+        /// Optional target directory (defaults to root)
+        destination: Option<PathBuf>,
     },
     /// Remove a file or directory
     Rm {
