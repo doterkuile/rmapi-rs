@@ -55,8 +55,8 @@ impl RmClient {
         Ok(())
     }
 
-    pub async fn check_authentication(&self) -> Result<(), Error> {
-        get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+    pub async fn check_authentication(&mut self) -> Result<(), Error> {
+        self.list_files().await?;
         Ok(())
     }
 
@@ -365,22 +365,18 @@ impl RmClient {
         .await?;
         let root_content = String::from_utf8(root_blob)?;
 
-        // 3. Find entry for doc_id
-        let mut entry_hash = None;
-        for line in root_content.lines().skip(1) {
-            if line.is_empty() {
-                continue;
-            }
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 3 && parts[2] == doc_id_str {
-                entry_hash = Some(parts[0].to_string());
-                break;
-            }
-        }
+        let root_entries: Vec<IndexEntry> = root_content
+            .lines()
+            .skip(1)
+            .filter(|line| !line.is_empty())
+            .map(IndexEntry::from_str)
+            .collect::<Result<_, _>>()?;
 
-        let entry_hash = entry_hash.ok_or(Error::Message(
-            "Document not found in root index".to_string(),
-        ))?;
+        let entry_hash = root_entries
+            .iter()
+            .find(|e| e.id == doc_id_str)
+            .map(|e| e.hash.clone())
+            .ok_or_else(|| Error::Message("Document not found in root index".to_string()))?;
 
         // 4. Fetch docSchema
         let doc_schema_bytes = fetch_blob(
@@ -393,16 +389,12 @@ impl RmClient {
         let doc_schema_content = String::from_utf8(doc_schema_bytes)?;
 
         // 5. Parse docSchema
-        let mut subfiles = Vec::new();
-        for line in doc_schema_content.lines().skip(1) {
-            if line.is_empty() {
-                continue;
-            }
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 3 {
-                subfiles.push((parts[0].to_string(), parts[2].to_string()));
-            }
-        }
+        let subfiles: Vec<(String, String)> = doc_schema_content
+            .lines()
+            .skip(1)
+            .filter(|line| !line.is_empty())
+            .map(|line| IndexEntry::from_str(line).map(|entry| (entry.hash, entry.id)))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // 6. Determine download type
         let main_file = subfiles
@@ -478,10 +470,12 @@ impl RmClient {
                 tokio::fs::create_dir_all(&new_dir).await?;
                 log::info!("Created directory {:?}", new_dir);
 
-                for child in node.children.values() {
-                    let fut = self.download_entry(child, new_dir.clone(), true)?;
-                    fut.await?;
-                }
+                let futures = node
+                    .children
+                    .values()
+                    .map(|child| self.download_entry(child, new_dir.clone(), true))
+                    .collect::<Result<Vec<_>, _>>()?;
+                futures::future::try_join_all(futures).await?;
             } else {
                 let target_base = target_path.join(node.name());
                 self.download_document(&node.document.id, &target_base)
