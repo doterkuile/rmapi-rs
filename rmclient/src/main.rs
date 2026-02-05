@@ -71,16 +71,8 @@ async fn run(args: Args) -> Result<(), Error> {
         }
         Commands::Ls { path } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
-            if let Err(e) = client.list_files().await {
-                if e.is_unauthorized() {
-                    log::info!("Token expired, refreshing...");
-                    client.refresh_token().await?;
-                    write_token_file(&client, &args.auth_token_file).await?;
-                    client.list_files().await?;
-                } else {
-                    return Err(Error::Rmapi(e));
-                }
-            }
+            crate::rmclient::token::refetch_if_unauthorized(&mut client, &args.auth_token_file)
+                .await?;
 
             let target_path = path.as_deref().unwrap_or(Path::new("/"));
             let entries = client.filesystem.list_dir(Some(target_path))?;
@@ -105,16 +97,9 @@ async fn run(args: Args) -> Result<(), Error> {
                 return Err(Error::Message("Only PDF files are supported".to_string()));
             }
             let mut client = client_from_token_file(&args.auth_token_file).await?;
-            if let Err(e) = client.list_files().await {
-                if e.is_unauthorized() {
-                    log::info!("Token expired, refreshing...");
-                    client.refresh_token().await?;
-                    write_token_file(&client, &args.auth_token_file).await?;
-                    client.list_files().await?;
-                } else {
-                    return Err(Error::Rmapi(e));
-                }
-            }
+            crate::rmclient::token::refetch_if_unauthorized(&mut client, &args.auth_token_file)
+                .await?;
+
             let parent_id = match destination {
                 Some(dest) if !dest.as_os_str().is_empty() => {
                     let normalized = rmapi::filesystem::normalize_path(&dest, Path::new("/"));
@@ -141,16 +126,8 @@ async fn run(args: Args) -> Result<(), Error> {
         }
         Commands::Rm { path } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
-            if let Err(e) = client.list_files().await {
-                if e.is_unauthorized() {
-                    log::info!("Token expired, refreshing...");
-                    client.refresh_token().await?;
-                    write_token_file(&client, &args.auth_token_file).await?;
-                    client.list_files().await?;
-                } else {
-                    return Err(Error::Rmapi(e));
-                }
-            }
+            crate::rmclient::token::refetch_if_unauthorized(&mut client, &args.auth_token_file)
+                .await?;
 
             let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
             let node = client
@@ -163,6 +140,25 @@ async fn run(args: Args) -> Result<(), Error> {
                 .await
                 .map_err(Error::Rmapi)?;
             println!("Removal successful");
+        }
+        Commands::Get { path, recursive } => {
+            let mut client = client_from_token_file(&args.auth_token_file).await?;
+            crate::rmclient::token::refetch_if_unauthorized(&mut client, &args.auth_token_file)
+                .await?;
+
+            let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
+
+            let node = client
+                .filesystem
+                .find_node_by_path(&normalized_path)
+                .map_err(Error::Rmapi)?;
+
+            client
+                .download_entry(node, PathBuf::from("."), recursive)
+                .map_err(Error::Rmapi)?
+                .await
+                .map_err(Error::Rmapi)?;
+            println!("Download complete");
         }
     }
     Ok(())

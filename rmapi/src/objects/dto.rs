@@ -122,3 +122,26 @@ fn default_line_height() -> i32 {
 fn default_text_scale() -> f32 {
     1.0
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClientRegistration {
+    pub code: String,
+    #[serde(rename = "deviceDesc")]
+    pub device_desc: String,
+    #[serde(rename = "deviceID")]
+    pub device_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StorageInfo {
+    #[serde(rename = "Status")]
+    pub status: String,
+    #[serde(rename = "Host")]
+    pub host: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RootInfo {
+    pub hash: String,
+    pub generation: u64,
+}

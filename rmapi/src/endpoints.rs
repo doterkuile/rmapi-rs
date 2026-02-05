@@ -4,29 +4,21 @@ use crate::constants::{
     STORAGE_DISCOVERY_API_URL, STORAGE_DISCOVERY_API_VERSION, WEBAPP_API_URL_ROOT,
 };
 use crate::error::Error;
-use crate::objects::{V4Entry, V4Metadata};
+use crate::objects::{ClientRegistration, RootInfo, StorageInfo, V4Entry, V4Metadata};
 use base64::Engine;
 use log;
 use reqwest::{self, Body};
-use serde::{Deserialize, Serialize};
+
 use tokio::fs::File;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-struct ClientRegistation {
-    code: String,
-    deviceDesc: String,
-    deviceID: String,
-}
-
 pub async fn register_client(client: &reqwest::Client, code: &str) -> Result<String, Error> {
     log::info!("Registering client with code: {}", code);
-    let registration_info = ClientRegistation {
+    let registration_info = ClientRegistration {
         code: code.to_string(),
-        deviceDesc: "desktop-windows".to_string(),
-        deviceID: Uuid::new_v4().to_string(),
+        device_desc: "desktop-windows".to_string(),
+        device_id: Uuid::new_v4().to_string(),
     };
 
     let response = client
@@ -76,13 +68,6 @@ pub async fn refresh_token(client: &reqwest::Client, auth_token: &str) -> Result
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
-struct StorageInfo {
-    Status: String,
-    Host: String,
-}
-
 pub async fn discover_storage(client: &reqwest::Client, auth_token: &str) -> Result<String, Error> {
     log::info!("Discovering storage host");
     let discovery_request = vec![
@@ -105,7 +90,7 @@ pub async fn discover_storage(client: &reqwest::Client, auth_token: &str) -> Res
         Ok(res) => {
             let storage_info = res.json::<StorageInfo>().await?;
             log::debug!("Storage Info: {:?}", storage_info);
-            Ok(format!("https://{0}", storage_info.Host))
+            Ok(format!("https://{0}", storage_info.host))
         }
         Err(e) => {
             log::error!("Error discovering storage: {}", e);
@@ -114,12 +99,12 @@ pub async fn discover_storage(client: &reqwest::Client, auth_token: &str) -> Res
     }
 }
 
-pub async fn sync_root(
+pub async fn get_root_info(
     client: &reqwest::Client,
     storage_url: &str,
     auth_token: &str,
-) -> Result<String, Error> {
-    log::info!("Listing items in the rmCloud");
+) -> Result<RootInfo, Error> {
+    log::debug!("Fetching root info");
     let response = client
         .get(format!("{}/{}", storage_url, ROOT_SYNC_ENDPOINT))
         .bearer_auth(auth_token)
@@ -129,18 +114,12 @@ pub async fn sync_root(
         .await?;
 
     log::debug!("{:?}", response);
-
-    match response.error_for_status() {
-        Ok(res) => {
-            let root_hash = res.text().await?;
-            log::debug!("Root Hash: {}", root_hash);
-            Ok(root_hash)
-        }
-        Err(e) => {
-            log::error!("Error listing items: {}", e);
-            Err(Error::from(e))
-        }
-    }
+    let res = response.error_for_status().map_err(Error::from)?;
+    let root_info = res.json::<RootInfo>().await.map_err(|e| {
+        log::error!("Failed to parse root JSON: {}", e);
+        Error::from(e)
+    })?;
+    Ok(root_info)
 }
 
 pub async fn upload_request(
@@ -217,31 +196,8 @@ pub async fn get_files(
     log::info!("Requesting files version Sync V4");
 
     // 1. Get the root hash
-    let root_hash_response = client
-        .get(format!("{}/{}", STORAGE_API_URL_ROOT, ROOT_SYNC_ENDPOINT))
-        .bearer_auth(auth_token)
-        .header("Accept", "application/json")
-        .header(HEADER_RM_FILENAME, "roothash")
-        .send()
-        .await?
-        .error_for_status()?;
-
-    let root_resp_text = root_hash_response.text().await?;
-    log::debug!("Root response: {}", root_resp_text);
-
-    // Parse the root response which is JSON in V4
-    let root_info: serde_json::Value = serde_json::from_str(&root_resp_text).map_err(|e| {
-        log::error!("Failed to parse root JSON: {}", e);
-        Error::from(e)
-    })?;
-
-    let root_hash = root_info["hash"]
-        .as_str()
-        .ok_or_else(|| {
-            log::error!("Missing hash in root info");
-            Error::Message("Missing hash in root info".to_string())
-        })?
-        .to_string();
+    let root_info = get_root_info(client, STORAGE_API_URL_ROOT, auth_token).await?;
+    let root_hash = root_info.hash;
 
     // 2. Fetch the root index blob
     let root_blob_response = client
