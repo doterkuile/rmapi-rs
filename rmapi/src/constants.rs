@@ -36,6 +36,7 @@ pub const MIME_TYPE_DOC_SCHEMA: &str = "text/plain; charset=UTF-8";
 
 // Magic Values
 pub const ROOT_ID: &str = "80000000";
+pub const TRASH_ID: &str = "de000000-0000-0000-0000-000000000000";
 pub const DOC_TYPE_DOCUMENT: &str = "DocumentType";
 pub const DOC_TYPE_COLLECTION: &str = "CollectionType";
 pub const MSG_UNKNOWN_COUNT_4: &str = "4";

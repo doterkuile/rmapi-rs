@@ -1,6 +1,6 @@
 use crate::constants::{
     DOC_TYPE_DOCUMENT, MIME_TYPE_DOC_SCHEMA, MIME_TYPE_JSON, MIME_TYPE_OCTET_STREAM, MIME_TYPE_PDF,
-    MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT,
+    MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT, TRASH_ID,
 };
 use crate::endpoints::{
     fetch_blob, get_files, get_root_info, refresh_token, register_client, update_root, upload_blob,
@@ -118,7 +118,7 @@ impl RmClient {
         let metadata = V4Metadata {
             visible_name: display_name.to_string(),
             doc_type: DOC_TYPE_DOCUMENT.to_string(),
-            parent: parent_id.unwrap_or("").to_string(),
+            parent: self.resolve_parent_id_for_metadata(parent_id.unwrap_or(ROOT_ID)),
             created_time: timestamp.clone(),
             last_modified: timestamp.clone(),
             version: 0,
@@ -127,10 +127,8 @@ impl RmClient {
             metadata_modified: false,
             modified: false,
             synced: true,
+            other: std::collections::HashMap::new(),
         };
-        let metadata_json = serde_json::to_vec(&metadata)?;
-        let metadata_hash = self.compute_hash(&metadata_json);
-        let metadata_size = metadata_json.len() as u64;
 
         let content = V4Content {
             extra_metadata: ExtraMetadata::default(),
@@ -156,14 +154,11 @@ impl RmClient {
         // Upload blobs
         self.upload_part(&pdf_hash, &uuid, "pdf", &pdf_data, MIME_TYPE_PDF)
             .await?;
-        self.upload_part(
-            &metadata_hash,
-            &uuid,
-            "metadata",
-            &metadata_json,
-            MIME_TYPE_JSON,
-        )
-        .await?;
+
+        // Use helper for metadata upload
+        // Note: put_document creates new metadata rather than modifying existing, so we construct it first
+        let (metadata_hash, metadata_size) = self.upload_metadata(&uuid, &metadata).await?;
+
         self.upload_part(
             &content_hash,
             &uuid,
@@ -209,32 +204,16 @@ impl RmClient {
             pdf_size,
         ));
 
-        // calculate_root_hash sorts internally, so we don't need to manually sort entries for hashing
-        // BUT we do need them sorted for the file content to match the hash
-        let doc_hash = IndexEntry::calculate_root_hash(&entries)?;
-
-        // Sort entries to write them to file in correct order
-        entries.sort_by(|a, b| a.id.cmp(&b.id));
-
-        let mut doc_schema_content = String::from("3\n");
-        for entry in &entries {
-            doc_schema_content.push_str(&entry.to_string());
-            doc_schema_content.push('\n');
-        }
-
-        self.upload_part(
-            &doc_hash,
-            &uuid,
-            "docSchema",
-            doc_schema_content.as_bytes(),
-            MIME_TYPE_DOC_SCHEMA,
-        )
-        .await?;
+        // Use helper for docSchema upload
+        let doc_hash = self.upload_doc_schema(&uuid, &mut entries).await?;
 
         // Update Root
+
         let total_size = pdf_size + metadata_size + content_size + pagedata_size;
-        let index_parent = parent_id.unwrap_or(ROOT_ID);
-        let mut new_entry = IndexEntry::new(doc_hash, index_parent.to_string(), uuid, total_size);
+        let parent_id_str = parent_id.unwrap_or(ROOT_ID);
+        let index_parent = self.resolve_parent_id_for_index(parent_id_str);
+
+        let mut new_entry = IndexEntry::new(doc_hash, index_parent.clone(), uuid, total_size);
         new_entry.unknown_count = MSG_UNKNOWN_COUNT_4.to_string();
 
         self.modify_root_index(move |root_entries| {
@@ -246,17 +225,12 @@ impl RmClient {
         Ok(())
     }
 
-    async fn modify_root_index<F>(&self, modifier: F) -> Result<(), Error>
-    where
-        F: FnOnce(&mut Vec<IndexEntry>) -> Result<(), Error>,
-    {
-        // 1. Get root hash
+    async fn fetch_root_index(&self) -> Result<(String, u64, Vec<IndexEntry>), Error> {
         let root_info =
             get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
         let root_hash = root_info.hash;
         let generation = root_info.generation;
 
-        // 2. Fetch root index blob
         let root_blob = fetch_blob(
             &self.http_client,
             &self.storage_url,
@@ -268,17 +242,60 @@ impl RmClient {
 
         let mut root_entries: Vec<IndexEntry> = Vec::new();
         for line in root_content.lines().skip(1) {
-            // Skip "3"
             if !line.is_empty() {
                 root_entries.push(IndexEntry::from_str(line)?);
             }
         }
+        Ok((root_hash, generation, root_entries))
+    }
 
-        // 3. Apply modifier
-        modifier(&mut root_entries)?;
+    async fn fetch_doc_schema(&self, hash: &str) -> Result<Vec<IndexEntry>, Error> {
+        let doc_schema_bytes =
+            fetch_blob(&self.http_client, &self.storage_url, &self.auth_token, hash).await?;
+        let doc_schema_content = String::from_utf8(doc_schema_bytes)?;
 
-        // 4. Reconstruct root index
-        // calculate_root_hash sorts internally
+        doc_schema_content
+            .lines()
+            .skip(1)
+            .filter(|line| !line.is_empty())
+            .map(IndexEntry::from_str)
+            .collect::<Result<_, _>>()
+    }
+
+    async fn upload_doc_schema(
+        &self,
+        doc_id: &str,
+        entries: &mut [IndexEntry],
+    ) -> Result<String, Error> {
+        // Calculate hash based on sorted entries (Sync V4 requirement)
+        let doc_hash = IndexEntry::calculate_root_hash(entries)?;
+
+        // Sort entries to write them to file in correct order (by ID)
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let mut doc_schema_content = String::from("3\n");
+        for entry in entries {
+            doc_schema_content.push_str(&entry.to_string());
+            doc_schema_content.push('\n');
+        }
+
+        self.upload_part(
+            &doc_hash,
+            doc_id,
+            "docSchema",
+            doc_schema_content.as_bytes(),
+            MIME_TYPE_DOC_SCHEMA,
+        )
+        .await?;
+
+        Ok(doc_hash)
+    }
+
+    async fn update_root_index(
+        &self,
+        generation: u64,
+        mut root_entries: Vec<IndexEntry>,
+    ) -> Result<(), Error> {
         let new_root_hash = IndexEntry::calculate_root_hash(&root_entries)?;
 
         // Sort for writing content
@@ -291,7 +308,6 @@ impl RmClient {
         }
         let new_root_bytes = new_root_content.into_bytes();
 
-        // 5. Upload new root index blob
         upload_blob(
             &self.http_client,
             &self.storage_url,
@@ -303,7 +319,6 @@ impl RmClient {
         )
         .await?;
 
-        // 6. Update root pointer
         update_root(
             &self.http_client,
             &self.storage_url,
@@ -312,6 +327,150 @@ impl RmClient {
             generation,
         )
         .await?;
+
+        Ok(())
+    }
+
+    async fn upload_metadata(
+        &self,
+        doc_id: &str,
+        metadata: &V4Metadata,
+    ) -> Result<(String, u64), Error> {
+        let metadata_json = serde_json::to_vec(metadata)?;
+        let metadata_hash = self.compute_hash(&metadata_json);
+        let metadata_size = metadata_json.len() as u64;
+
+        self.upload_part(
+            &metadata_hash,
+            doc_id,
+            "metadata",
+            &metadata_json,
+            MIME_TYPE_JSON,
+        )
+        .await?;
+
+        Ok((metadata_hash, metadata_size))
+    }
+
+    fn resolve_parent_id_for_index(&self, parent_id: &str) -> String {
+        if parent_id == Uuid::nil().to_string() || parent_id == "" {
+            ROOT_ID.to_string()
+        } else if parent_id == TRASH_ID {
+            "trash".to_string()
+        } else {
+            parent_id.to_string()
+        }
+    }
+
+    fn resolve_parent_id_for_metadata(&self, parent_id: &str) -> String {
+        if parent_id == Uuid::nil().to_string() || parent_id == ROOT_ID {
+            "".to_string()
+        } else if parent_id == TRASH_ID {
+            "trash".to_string()
+        } else {
+            parent_id.to_string()
+        }
+    }
+
+    pub async fn move_entry(
+        &self,
+        doc_id: &str,
+        new_parent_id: &str,
+        new_name: Option<&str>,
+    ) -> Result<(), Error> {
+        let index_parent_id = self.resolve_parent_id_for_index(new_parent_id);
+        log::info!(
+            "Moving document: {} to parent {} (Index ID: {})",
+            doc_id,
+            new_parent_id,
+            index_parent_id
+        );
+
+        // 1 & 2. Fetch root index
+        let (_root_hash, generation, mut root_entries) = self.fetch_root_index().await?;
+
+        // 3. Find the entry and process the move
+        let entry_idx = root_entries
+            .iter()
+            .position(|e| e.id == doc_id)
+            .ok_or_else(|| Error::Message("Document not found in root index".to_string()))?;
+
+        let entry = &root_entries[entry_idx];
+        let original_hash = entry.hash.clone();
+
+        // 4. Fetch .docSchema
+        let mut subfiles = self.fetch_doc_schema(&original_hash).await?;
+
+        // 5. Find .metadata entry
+        let metadata_idx = subfiles
+            .iter()
+            .position(|e| e.id.ends_with(".metadata"))
+            .ok_or_else(|| Error::Message("Metadata not found in doc schema".to_string()))?;
+
+        let metadata_entry = &subfiles[metadata_idx];
+
+        // 6. Fetch .metadata blob
+        let metadata_bytes = fetch_blob(
+            &self.http_client,
+            &self.storage_url,
+            &self.auth_token,
+            &metadata_entry.hash,
+        )
+        .await?;
+
+        let mut metadata: V4Metadata = serde_json::from_slice(&metadata_bytes)
+            .map_err(|e| Error::Message(format!("Failed to parse metadata: {}", e)))?;
+
+        // 7. Update metadata
+        metadata.parent = self.resolve_parent_id_for_metadata(new_parent_id);
+        metadata.version += 1;
+        metadata.metadata_modified = true;
+        metadata.last_modified = Utc::now().timestamp_millis().to_string();
+        if let Some(name) = new_name {
+            metadata.visible_name = name.to_string();
+        }
+
+        // 8. Upload new metadata
+        let (new_metadata_hash, new_metadata_size) =
+            self.upload_metadata(doc_id, &metadata).await?;
+
+        // 9. Update subfiles list with new metadata info
+        subfiles[metadata_idx].hash = new_metadata_hash.clone();
+        subfiles[metadata_idx].size = new_metadata_size;
+
+        // 10, 11 & 12. Recalculate hash and upload new .docSchema
+        let new_doc_hash = self.upload_doc_schema(doc_id, &mut subfiles).await?;
+
+        // 13. Update root index entry
+        // Update parent ID (stored in type_id for Sync V4) and new hash
+        let mut updated_entry = root_entries[entry_idx].clone();
+        updated_entry.hash = new_doc_hash.clone();
+        updated_entry.type_id = self.resolve_parent_id_for_index(new_parent_id);
+        // We should also update the total size
+        let total_size: u64 = subfiles.iter().map(|s| s.size).sum();
+        updated_entry.size = total_size;
+
+        root_entries[entry_idx] = updated_entry;
+
+        // 14 & 15. Update root index and pointer
+        self.update_root_index(generation, root_entries).await?;
+
+        log::info!("Move successful");
+        Ok(())
+    }
+
+    async fn modify_root_index<F>(&self, modifier: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut Vec<IndexEntry>) -> Result<(), Error>,
+    {
+        // 1 & 2. Fetch root index
+        let (_root_hash, generation, mut root_entries) = self.fetch_root_index().await?;
+
+        // 3. Apply modifier
+        modifier(&mut root_entries)?;
+
+        // 4 & 5. Update root index and pointer
+        self.update_root_index(generation, root_entries).await?;
 
         Ok(())
     }
@@ -350,27 +509,8 @@ impl RmClient {
         let doc_id_str = doc_id.to_string();
         log::info!("Downloading document: {}", doc_id_str);
 
-        // 1. Get root hash
-        let root_info =
-            get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
-        let root_hash = root_info.hash;
-
-        // 2. Fetch root index blob
-        let root_blob = fetch_blob(
-            &self.http_client,
-            &self.storage_url,
-            &self.auth_token,
-            &root_hash,
-        )
-        .await?;
-        let root_content = String::from_utf8(root_blob)?;
-
-        let root_entries: Vec<IndexEntry> = root_content
-            .lines()
-            .skip(1)
-            .filter(|line| !line.is_empty())
-            .map(IndexEntry::from_str)
-            .collect::<Result<_, _>>()?;
+        // 1 & 2. Fetch root index
+        let (_, _, root_entries) = self.fetch_root_index().await?;
 
         let entry_hash = root_entries
             .iter()
@@ -378,23 +518,12 @@ impl RmClient {
             .map(|e| e.hash.clone())
             .ok_or_else(|| Error::Message("Document not found in root index".to_string()))?;
 
-        // 4. Fetch docSchema
-        let doc_schema_bytes = fetch_blob(
-            &self.http_client,
-            &self.storage_url,
-            &self.auth_token,
-            &entry_hash,
-        )
-        .await?;
-        let doc_schema_content = String::from_utf8(doc_schema_bytes)?;
-
-        // 5. Parse docSchema
-        let subfiles: Vec<(String, String)> = doc_schema_content
-            .lines()
-            .skip(1)
-            .filter(|line| !line.is_empty())
-            .map(|line| IndexEntry::from_str(line).map(|entry| (entry.hash, entry.id)))
-            .collect::<Result<Vec<_>, _>>()?;
+        // 4 & 5. Fetch docSchema and parse
+        let subfiles_entries = self.fetch_doc_schema(&entry_hash).await?;
+        let subfiles: Vec<(String, String)> = subfiles_entries
+            .into_iter()
+            .map(|entry| (entry.hash, entry.id))
+            .collect();
 
         // 6. Determine download type
         let main_file = subfiles

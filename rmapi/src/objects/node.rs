@@ -55,7 +55,7 @@ impl FileTree {
         // This prevents ID collisions with the Root node (which uses the nil UUID)
         // when performing recursive searches like `find_node_mut`.
         let trash_node = Node::new(Document {
-            id: uuid::Uuid::parse_str("de000000-0000-0000-0000-000000000000").unwrap(),
+            id: uuid::Uuid::parse_str(crate::constants::TRASH_ID).unwrap(),
             display_name: "trash".to_string(),
             doc_type: DocumentType::Collection,
             parent: "".to_string(),

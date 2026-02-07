@@ -124,7 +124,12 @@ impl FileSystem {
         }) {
             let part_str = part.to_string_lossy();
 
-            if let Some(next) = current.children.get(part_str.as_ref()) {
+            let found = current
+                .children
+                .values()
+                .find(|node| node.name() == part_str);
+
+            if let Some(next) = found {
                 current = next;
             } else {
                 return Err(Error::Message(format!(

@@ -85,3 +85,49 @@ pub fn cd(client: &RmClient, path: &Path) -> Result<(), Error> {
     }
     Ok(())
 }
+
+pub async fn mv(client: &RmClient, path: &Path, destination: &Path) -> Result<(), Error> {
+    let src_node = client.filesystem.find_node_by_path(path)?;
+    let src_id = src_node.id().to_string();
+
+    // Check if destination exists
+    match client.filesystem.find_node_by_path(destination) {
+        Ok(dest_node) => {
+            if dest_node.is_directory() {
+                // Move into directory
+                let dest_id = dest_node.id();
+                client
+                    .move_entry(&src_id, &dest_id, None)
+                    .await
+                    .map_err(Error::Rmapi)?;
+            } else {
+                return Err(Error::Message("Destination already exists".to_string()));
+            }
+        }
+        Err(_) => {
+            // Destination does not exist, treat as rename/move-to-new-name
+            // Ensure parent exists
+            let parent = destination.parent().unwrap_or(Path::new("/"));
+
+            let parent_node = client.filesystem.find_node_by_path(parent)?;
+            if !parent_node.is_directory() {
+                return Err(Error::Message(
+                    "Destination parent is not a directory".to_string(),
+                ));
+            }
+
+            let new_name = destination
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| Error::Message("Invalid filename".to_string()))?;
+
+            let parent_id = parent_node.id();
+            client
+                .move_entry(&src_id, &parent_id, Some(new_name))
+                .await
+                .map_err(Error::Rmapi)?;
+        }
+    }
+
+    Ok(())
+}

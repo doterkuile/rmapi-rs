@@ -35,4 +35,11 @@ pub enum Commands {
         #[arg(short, long)]
         recursive: bool,
     },
+    /// Move a file or directory
+    Mv {
+        /// Path of the file/directory to move
+        path: PathBuf,
+        /// Destination path
+        destination: PathBuf,
+    },
 }
