@@ -24,6 +24,8 @@ pub struct V4Metadata {
     pub modified: bool,
     #[serde(default)]
     pub synced: bool,
+    #[serde(flatten)]
+    pub other: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

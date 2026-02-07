@@ -118,7 +118,7 @@ impl RmClient {
         let metadata = V4Metadata {
             visible_name: display_name.to_string(),
             doc_type: DOC_TYPE_DOCUMENT.to_string(),
-            parent: parent_id.unwrap_or("").to_string(),
+            parent: self.resolve_parent_id_for_metadata(parent_id.unwrap_or(ROOT_ID)),
             created_time: timestamp.clone(),
             last_modified: timestamp.clone(),
             version: 0,
@@ -127,6 +127,7 @@ impl RmClient {
             metadata_modified: false,
             modified: false,
             synced: true,
+            other: std::collections::HashMap::new(),
         };
 
         let content = V4Content {
@@ -207,9 +208,12 @@ impl RmClient {
         let doc_hash = self.upload_doc_schema(&uuid, &mut entries).await?;
 
         // Update Root
+
         let total_size = pdf_size + metadata_size + content_size + pagedata_size;
-        let index_parent = parent_id.unwrap_or(ROOT_ID);
-        let mut new_entry = IndexEntry::new(doc_hash, index_parent.to_string(), uuid, total_size);
+        let parent_id_str = parent_id.unwrap_or(ROOT_ID);
+        let index_parent = self.resolve_parent_id_for_index(parent_id_str);
+
+        let mut new_entry = IndexEntry::new(doc_hash, index_parent.clone(), uuid, total_size);
         new_entry.unknown_count = MSG_UNKNOWN_COUNT_4.to_string();
 
         self.modify_root_index(move |root_entries| {
@@ -348,13 +352,39 @@ impl RmClient {
         Ok((metadata_hash, metadata_size))
     }
 
+    fn resolve_parent_id_for_index(&self, parent_id: &str) -> String {
+        if parent_id == Uuid::nil().to_string() || parent_id == "" {
+            ROOT_ID.to_string()
+        } else if parent_id == "de000000-0000-0000-0000-000000000000" {
+            "trash".to_string()
+        } else {
+            parent_id.to_string()
+        }
+    }
+
+    fn resolve_parent_id_for_metadata(&self, parent_id: &str) -> String {
+        if parent_id == Uuid::nil().to_string() || parent_id == ROOT_ID {
+            "".to_string()
+        } else if parent_id == "de000000-0000-0000-0000-000000000000" {
+            "trash".to_string()
+        } else {
+            parent_id.to_string()
+        }
+    }
+
     pub async fn move_entry(
         &self,
         doc_id: &str,
         new_parent_id: &str,
         new_name: Option<&str>,
     ) -> Result<(), Error> {
-        log::info!("Moving document: {} to parent {}", doc_id, new_parent_id);
+        let index_parent_id = self.resolve_parent_id_for_index(new_parent_id);
+        log::info!(
+            "Moving document: {} to parent {} (Index ID: {})",
+            doc_id,
+            new_parent_id,
+            index_parent_id
+        );
 
         // 1 & 2. Fetch root index
         let (_root_hash, generation, mut root_entries) = self.fetch_root_index().await?;
@@ -392,7 +422,7 @@ impl RmClient {
             .map_err(|e| Error::Message(format!("Failed to parse metadata: {}", e)))?;
 
         // 7. Update metadata
-        metadata.parent = new_parent_id.to_string();
+        metadata.parent = self.resolve_parent_id_for_metadata(new_parent_id);
         metadata.version += 1;
         metadata.metadata_modified = true;
         metadata.last_modified = Utc::now().timestamp_millis().to_string();
@@ -415,7 +445,7 @@ impl RmClient {
         // Update parent ID (stored in type_id for Sync V4) and new hash
         let mut updated_entry = root_entries[entry_idx].clone();
         updated_entry.hash = new_doc_hash.clone();
-        updated_entry.type_id = new_parent_id.to_string();
+        updated_entry.type_id = self.resolve_parent_id_for_index(new_parent_id);
         // We should also update the total size
         let total_size: u64 = subfiles.iter().map(|s| s.size).sum();
         updated_entry.size = total_size;
