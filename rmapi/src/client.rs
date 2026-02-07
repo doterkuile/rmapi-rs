@@ -1,6 +1,6 @@
 use crate::constants::{
     DOC_TYPE_DOCUMENT, MIME_TYPE_DOC_SCHEMA, MIME_TYPE_JSON, MIME_TYPE_OCTET_STREAM, MIME_TYPE_PDF,
-    MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT,
+    MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT, TRASH_ID,
 };
 use crate::endpoints::{
     fetch_blob, get_files, get_root_info, refresh_token, register_client, update_root, upload_blob,
@@ -355,7 +355,7 @@ impl RmClient {
     fn resolve_parent_id_for_index(&self, parent_id: &str) -> String {
         if parent_id == Uuid::nil().to_string() || parent_id == "" {
             ROOT_ID.to_string()
-        } else if parent_id == "de000000-0000-0000-0000-000000000000" {
+        } else if parent_id == TRASH_ID {
             "trash".to_string()
         } else {
             parent_id.to_string()
@@ -365,7 +365,7 @@ impl RmClient {
     fn resolve_parent_id_for_metadata(&self, parent_id: &str) -> String {
         if parent_id == Uuid::nil().to_string() || parent_id == ROOT_ID {
             "".to_string()
-        } else if parent_id == "de000000-0000-0000-0000-000000000000" {
+        } else if parent_id == TRASH_ID {
             "trash".to_string()
         } else {
             parent_id.to_string()
