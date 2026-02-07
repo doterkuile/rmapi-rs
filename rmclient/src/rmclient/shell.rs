@@ -46,6 +46,13 @@ enum ShellCommand {
         #[arg(short, long)]
         recursive: bool,
     },
+    /// Move a file or directory
+    Mv {
+        /// Name of the file/directory to move
+        path: PathBuf,
+        /// Destination path
+        destination: PathBuf,
+    },
 }
 
 pub struct Shell {
@@ -119,6 +126,7 @@ impl Shell {
                 self.exec_put(&path, destination.as_deref()).await?
             }
             ShellCommand::Get { path, recursive } => self.exec_get(&path, recursive).await?,
+            ShellCommand::Mv { path, destination } => self.exec_mv(&path, &destination).await?,
         }
         Ok(false)
     }
@@ -184,5 +192,16 @@ impl Shell {
     async fn exec_get(&mut self, path: &Path, recursive: bool) -> Result<(), Error> {
         let target = rmapi::filesystem::normalize_path(path, &self.current_path);
         actions::get(&self.client, &target, recursive).await
+    }
+
+    async fn exec_mv(&mut self, path: &Path, destination: &Path) -> Result<(), Error> {
+        let src_target = rmapi::filesystem::normalize_path(path, &self.current_path);
+        let dest_target = rmapi::filesystem::normalize_path(destination, &self.current_path);
+
+        actions::mv(&self.client, &src_target, &dest_target).await?;
+
+        // Refresh file list
+        self.client.list_files().await?;
+        Ok(())
     }
 }

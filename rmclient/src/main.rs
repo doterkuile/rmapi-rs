@@ -105,6 +105,13 @@ async fn run(args: Args) -> Result<(), Error> {
             let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
             actions::get(&client, &normalized_path, recursive).await?;
         }
+        Commands::Mv { path, destination } => {
+            let client = prepare_client(&args.auth_token_file).await?;
+            let normalized_path = rmapi::filesystem::normalize_path(&path, Path::new("/"));
+            let normalized_destination =
+                rmapi::filesystem::normalize_path(&destination, Path::new("/"));
+            actions::mv(&client, &normalized_path, &normalized_destination).await?;
+        }
     }
     Ok(())
 }
