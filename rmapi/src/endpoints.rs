@@ -192,6 +192,7 @@ pub async fn get_files(
     client: &reqwest::Client,
     _storage_url: &str, // Ignored because Sync V4 needs internal host
     auth_token: &str,
+    old_docs: &[crate::objects::Document],
 ) -> Result<(Vec<crate::objects::Document>, String), Error> {
     log::info!("Requesting files version Sync V4");
 
@@ -239,10 +240,29 @@ pub async fn get_files(
     let auth_token = auth_token.to_string();
     let client = client.clone();
 
+    // Create a map of existing docs for quick lookup
+    let mut existing_docs: std::collections::HashMap<Uuid, (String, crate::objects::Document)> =
+        std::collections::HashMap::new();
+    for doc in old_docs {
+        existing_docs.insert(doc.id, (doc.hash.clone(), doc.clone()));
+    }
+    // Shared map to avoid move issues in loop
+    let existing_docs = std::sync::Arc::new(existing_docs);
+
     for entry in entries {
         let auth_token = auth_token.clone();
         let client = client.clone();
+        let existing_docs = existing_docs.clone();
         tasks.push(tokio::spawn(async move {
+            let entry_id = Uuid::parse_str(&entry.doc_id).unwrap_or(Uuid::nil());
+
+            // Check if we already have this document with the same hash
+            if let Some((hash, doc)) = existing_docs.get(&entry_id) {
+                if *hash == entry.hash {
+                    return Some(doc.clone());
+                }
+            }
+
             // Fetch .docSchema to find .metadata hash
             let doc_schema_response = client
                 .get(format!(
@@ -319,6 +339,7 @@ pub async fn get_files(
                 current_page: 0,
                 bookmarked: metadata_json.pinned,
                 parent: metadata_json.parent,
+                hash: entry.hash.clone(),
             })
         }));
     }
