@@ -38,6 +38,9 @@ pub struct Document {
     pub bookmarked: bool,
     #[serde(rename = "Parent")]
     pub parent: String,
+    #[serde(default)]
+    #[serde(rename = "Hash")]
+    pub hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
