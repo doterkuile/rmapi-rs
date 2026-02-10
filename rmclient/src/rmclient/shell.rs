@@ -1,4 +1,5 @@
 use crate::rmclient::actions;
+use crate::rmclient::commands::{CommandContext, Executable};
 use crate::rmclient::error::Error;
 use clap::Parser;
 use rmapi::RmClient;
@@ -23,7 +24,6 @@ enum ShellCommand {
     Pwd,
     /// Exit the shell
     Exit,
-    /// Alias for Exit
     /// Alias for Exit
     Quit,
     /// Remove a file
@@ -53,6 +53,47 @@ enum ShellCommand {
         /// Destination path
         destination: PathBuf,
     },
+}
+
+impl Executable for ShellCommand {
+    async fn execute(&self, ctx: &mut CommandContext<'_>) -> Result<(), Error> {
+        let client = ctx
+            .client
+            .as_mut()
+            .ok_or_else(|| Error::Message("Client required".into()))?;
+
+        match self {
+            ShellCommand::Ls { path } => {
+                let target_path = path.as_deref().unwrap_or(Path::new("."));
+                let normalized = rmapi::filesystem::normalize_path(target_path, ctx.current_path);
+                actions::ls(client, &normalized).await
+            }
+            ShellCommand::Rm { path } => {
+                let normalized = rmapi::filesystem::normalize_path(path, ctx.current_path);
+                if normalized == Path::new("/") {
+                    return Err(Error::Message("Cannot remove root directory".into()));
+                }
+                actions::rm(client, &normalized).await
+            }
+            ShellCommand::Put { path, destination } => {
+                let dest_path = destination
+                    .as_deref()
+                    .map(|d| rmapi::filesystem::normalize_path(d, ctx.current_path));
+                actions::put(client, path, dest_path.as_deref()).await
+            }
+            ShellCommand::Get { path, recursive } => {
+                let normalized = rmapi::filesystem::normalize_path(path, ctx.current_path);
+                actions::get(client, &normalized, *recursive).await
+            }
+            ShellCommand::Mv { path, destination } => {
+                let src_normalized = rmapi::filesystem::normalize_path(path, ctx.current_path);
+                let dest_normalized =
+                    rmapi::filesystem::normalize_path(destination, ctx.current_path);
+                actions::mv(client, &src_normalized, &dest_normalized).await
+            }
+            _ => Ok(()), // Cd, Pwd, Exit handled special
+        }
+    }
 }
 
 pub struct Shell {
@@ -117,46 +158,31 @@ impl Shell {
 
     async fn handle_command(&mut self, cmd: ShellCommand) -> Result<bool, Error> {
         match cmd {
-            ShellCommand::Ls { path } => self.exec_ls(path.as_deref()).await?,
-            ShellCommand::Cd { path } => self.exec_cd(path.as_deref()).await?,
-            ShellCommand::Pwd => println!("{}", self.current_path.display()),
             ShellCommand::Exit | ShellCommand::Quit => return Ok(true),
-            ShellCommand::Rm { path } => self.exec_rm(&path).await?,
-            ShellCommand::Put { path, destination } => {
-                self.exec_put(&path, destination.as_deref()).await?
+            ShellCommand::Cd { path } => {
+                self.exec_cd(path.as_deref()).await?;
             }
-            ShellCommand::Get { path, recursive } => self.exec_get(&path, recursive).await?,
-            ShellCommand::Mv { path, destination } => self.exec_mv(&path, &destination).await?,
+            ShellCommand::Pwd => println!("{}", self.current_path.display()),
+            _ => {
+                let mut ctx = CommandContext {
+                    client: Some(&mut self.client),
+                    current_path: &self.current_path,
+                    auth_token_file: &self.token_file_path,
+                };
+                cmd.execute(&mut ctx).await?;
+
+                // Refresh state for commands that modify it
+                match cmd {
+                    ShellCommand::Rm { .. }
+                    | ShellCommand::Put { .. }
+                    | ShellCommand::Mv { .. } => {
+                        self.client.list_files().await?;
+                    }
+                    _ => {}
+                }
+            }
         }
         Ok(false)
-    }
-
-    async fn exec_ls(&mut self, path: Option<&Path>) -> Result<(), Error> {
-        let target_buf;
-        let target = if let Some(p) = path {
-            target_buf = rmapi::filesystem::normalize_path(p, &self.current_path);
-            &target_buf
-        } else {
-            &self.current_path
-        };
-
-        actions::ls(&self.client, target).await
-    }
-
-    async fn exec_rm(&mut self, path: &Path) -> Result<(), Error> {
-        let target = rmapi::filesystem::normalize_path(path, &self.current_path);
-
-        if target == Path::new("/") {
-            println!("Error: Cannot remove the root directory.");
-            return Ok(());
-        }
-
-        actions::rm(&self.client, &target).await?;
-
-        // Refresh file list
-        self.client.list_files().await?;
-        println!("Removed {}", target.display());
-        Ok(())
     }
 
     async fn exec_cd(&mut self, path: Option<&Path>) -> Result<(), Error> {
@@ -172,36 +198,6 @@ impl Shell {
             Ok(_) => self.current_path = target,
             Err(e) => println!("{}", e),
         }
-        Ok(())
-    }
-
-    async fn exec_put(&mut self, path: &Path, destination: Option<&Path>) -> Result<(), Error> {
-        let destination_path = if let Some(dest) = destination {
-            Some(rmapi::filesystem::normalize_path(dest, &self.current_path))
-        } else {
-            None
-        };
-
-        actions::put(&mut self.client, path, destination_path.as_deref()).await?;
-
-        // Refresh file list
-        self.client.list_files().await?;
-        Ok(())
-    }
-
-    async fn exec_get(&mut self, path: &Path, recursive: bool) -> Result<(), Error> {
-        let target = rmapi::filesystem::normalize_path(path, &self.current_path);
-        actions::get(&self.client, &target, recursive).await
-    }
-
-    async fn exec_mv(&mut self, path: &Path, destination: &Path) -> Result<(), Error> {
-        let src_target = rmapi::filesystem::normalize_path(path, &self.current_path);
-        let dest_target = rmapi::filesystem::normalize_path(destination, &self.current_path);
-
-        actions::mv(&self.client, &src_target, &dest_target).await?;
-
-        // Refresh file list
-        self.client.list_files().await?;
         Ok(())
     }
 }

@@ -54,3 +54,24 @@ pub async fn refetch_if_unauthorized(
     }
     Ok(())
 }
+pub async fn client_from_token_file(auth_token_file: &Path) -> Result<RmClient, Error> {
+    if !auth_token_file.exists() {
+        return Err(Error::TokenFileNotFound);
+    } else if !auth_token_file.is_file() {
+        return Err(Error::TokenFileInvalid);
+    } else {
+        let file_content = tokio::fs::read_to_string(&auth_token_file).await?;
+        log::debug!(
+            "Using token from {:?} to create a new client",
+            auth_token_file
+        );
+
+        // Try parsing as JSON first
+        if let Ok(auth_data) = serde_json::from_str::<AuthData>(&file_content) {
+            Ok(RmClient::from_token(&auth_data.user_token, Some(auth_data.device_token)).await?)
+        } else {
+            // Fallback to legacy plain text token (treat as user token only)
+            Ok(RmClient::from_token(&file_content.trim(), None).await?)
+        }
+    }
+}
