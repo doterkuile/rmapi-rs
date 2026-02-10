@@ -29,6 +29,7 @@ impl Node {
     }
 }
 
+#[derive(Clone)]
 pub struct FileTree {
     pub root: Node,
 }
