@@ -15,6 +15,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 use zip;
 
+#[derive(Clone)]
 pub struct RmClient {
     pub auth_token: String,
     pub device_token: Option<String>,

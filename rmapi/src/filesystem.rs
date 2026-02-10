@@ -10,6 +10,7 @@ struct CacheData {
     documents: Vec<Document>,
 }
 
+#[derive(Clone)]
 pub struct FileSystem {
     pub tree: FileTree,
     pub current_hash: String,

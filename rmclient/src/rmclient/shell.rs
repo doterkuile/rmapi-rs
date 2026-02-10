@@ -3,12 +3,13 @@ use crate::rmclient::error::Error;
 use clap::Parser;
 use rmapi::RmClient;
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::history::DefaultHistory;
+use rustyline::Editor;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(name = "", no_binary_name = true)]
-enum ShellCommand {
+pub(crate) enum ShellCommand {
     /// List files in the current or specified path
     Ls {
         /// Optional path to list
@@ -76,11 +77,21 @@ impl Shell {
         crate::rmclient::token::refetch_if_unauthorized(&mut self.client, &self.token_file_path)
             .await?;
 
-        let mut rl: DefaultEditor =
-            DefaultEditor::new().map_err(|e| Error::Message(e.to_string()))?;
+        let completer = crate::rmclient::completer::RmCompleter::new(
+            self.client.clone(),
+            self.current_path.clone(),
+        );
+        let mut rl: Editor<crate::rmclient::completer::RmCompleter, DefaultHistory> =
+            Editor::new().map_err(|e| Error::Message(e.to_string()))?;
+        rl.set_helper(Some(completer));
 
         loop {
             let prompt = format!("[{}]> ", self.current_path.display());
+            // Update current path in completer
+            if let Some(helper) = rl.helper_mut() {
+                helper.current_path = self.current_path.clone();
+            }
+
             match rl.readline(&prompt) {
                 Ok(line) => {
                     if self.handle_input(line, &mut rl).await? {
@@ -94,7 +105,11 @@ impl Shell {
         Ok(())
     }
 
-    async fn handle_input(&mut self, line: String, rl: &mut DefaultEditor) -> Result<bool, Error> {
+    async fn handle_input(
+        &mut self,
+        line: String,
+        rl: &mut Editor<crate::rmclient::completer::RmCompleter, DefaultHistory>,
+    ) -> Result<bool, Error> {
         let line = line.trim();
         if line.is_empty() {
             return Ok(false);
