@@ -32,8 +32,14 @@ pub async fn client_from_token_file(auth_token_file: &Path) -> Result<RmClient, 
         if let Ok(auth_data) =
             serde_json::from_str::<crate::rmclient::token::AuthData>(&file_content)
         {
-            let mut client =
-                RmClient::new(&auth_data.device_token, Some(&auth_data.user_token)).await?;
+            let mut client = RmClient::new(
+                &auth_data.device_token,
+                Some(&auth_data.user_token),
+                None,
+                None,
+                None,
+            )
+            .await?;
             refetch_if_unauthorized(&mut client, auth_token_file).await?;
             Ok(client)
         } else {
@@ -48,7 +54,7 @@ pub async fn client_from_registration_code(
 ) -> Result<RmClient, Error> {
     log::debug!("Registering client with reMarkable Cloud");
 
-    let client = RmClient::register_client(code).await?;
+    let client = RmClient::register_client(code, None).await?;
     write_token_file(&client, auth_token_file).await?;
     Ok(client)
 }
