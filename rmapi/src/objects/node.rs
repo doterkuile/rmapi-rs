@@ -33,6 +33,12 @@ pub struct FileTree {
     pub root: Node,
 }
 
+impl Default for FileTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileTree {
     pub fn new() -> Self {
         let root_doc = Document {

@@ -16,6 +16,9 @@ use std::str::FromStr;
 use uuid::Uuid;
 use zip;
 
+type BoxedFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>>;
+
 pub struct RmClient {
     pub user_token: String,
     pub device_token: String,
@@ -360,7 +363,7 @@ impl RmClient {
     }
 
     fn resolve_parent_id_for_index(&self, parent_id: &str) -> String {
-        if parent_id == Uuid::nil().to_string() || parent_id == "" {
+        if parent_id == Uuid::nil().to_string() || parent_id.is_empty() {
             ROOT_ID.to_string()
         } else if parent_id == TRASH_ID {
             "trash".to_string()
@@ -588,10 +591,7 @@ impl RmClient {
         node: &'a crate::objects::Node,
         target_path: std::path::PathBuf,
         recursive: bool,
-    ) -> Result<
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>>,
-        Error,
-    > {
+    ) -> Result<BoxedFuture<'a>, Error> {
         if node.is_directory() && !recursive {
             return Err(Error::Message(format!(
                 "{} is a directory. Use -r to download recursively.",

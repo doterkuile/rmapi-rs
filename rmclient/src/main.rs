@@ -57,11 +57,8 @@ async fn run(args: Args) -> Result<(), Error> {
         }
         Commands::Put { path, destination } => {
             let mut client = client_from_token_file(&args.auth_token_file).await?;
-            let destination_path = if let Some(dest) = destination {
-                Some(rmapi::filesystem::normalize_path(&dest, Path::new("/")))
-            } else {
-                None
-            };
+            let destination_path =
+                destination.map(|dest| rmapi::filesystem::normalize_path(&dest, Path::new("/")));
             actions::put(&mut client, &path, destination_path.as_deref()).await?;
         }
         Commands::Rm { path } => {

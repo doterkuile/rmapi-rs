@@ -17,6 +17,12 @@ pub struct FileSystem {
     pub current_path: PathBuf,
 }
 
+impl Default for FileSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileSystem {
     pub fn new() -> Self {
         FileSystem {

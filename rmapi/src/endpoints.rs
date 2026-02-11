@@ -270,7 +270,7 @@ pub async fn get_files(
             for subline in doc_schema_text.lines().skip(1) {
                 if subline.contains(".metadata") {
                     let subparts: Vec<&str> = subline.split(':').collect();
-                    if subparts.len() >= 1 {
+                    if !subparts.is_empty() {
                         metadata_hash = Some(subparts[0].to_string());
                         break;
                     }
@@ -311,7 +311,7 @@ pub async fn get_files(
                 blob_url_get: String::new(),
                 blob_url_put: String::new(),
                 blob_url_put_expires: chrono::Utc::now(),
-                last_modified: last_modified,
+                last_modified,
                 doc_type: if metadata_json.doc_type == "CollectionType" {
                     crate::objects::DocumentType::Collection
                 } else {
