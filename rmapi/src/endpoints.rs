@@ -13,7 +13,7 @@ use tokio::fs::File;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use uuid::Uuid;
 
-pub async fn register_client(client: &reqwest::Client, code: &str) -> Result<String, Error> {
+pub async fn register_client(http_client: &reqwest::Client, code: &str) -> Result<String, Error> {
     log::info!("Registering client with code: {}", code);
     let registration_info = ClientRegistration {
         code: code.to_string(),
@@ -21,7 +21,7 @@ pub async fn register_client(client: &reqwest::Client, code: &str) -> Result<Str
         device_id: Uuid::new_v4().to_string(),
     };
 
-    let response = client
+    let response = http_client
         .post(NEW_CLIENT_URL)
         .header("Content-Type", "application/json")
         .json(&registration_info)
@@ -43,11 +43,14 @@ pub async fn register_client(client: &reqwest::Client, code: &str) -> Result<Str
     }
 }
 
-pub async fn refresh_token(client: &reqwest::Client, auth_token: &str) -> Result<String, Error> {
-    log::info!("Refreshing token");
-    let response = client
+pub async fn refresh_user_token(
+    http_client: &reqwest::Client,
+    device_token: &str,
+) -> Result<String, Error> {
+    log::info!("Refreshing user token");
+    let response = http_client
         .post(NEW_TOKEN_URL)
-        .bearer_auth(auth_token)
+        .bearer_auth(device_token)
         .header("Accept", "application/json")
         .header("Content-Length", "0")
         .send()
@@ -57,27 +60,30 @@ pub async fn refresh_token(client: &reqwest::Client, auth_token: &str) -> Result
 
     match response.error_for_status() {
         Ok(res) => {
-            let token = res.text().await?;
-            log::debug!("New Token: {}", token);
-            Ok(token)
+            let user_token = res.text().await?;
+            log::debug!("User Token: {}", user_token);
+            Ok(user_token)
         }
         Err(e) => {
-            log::error!("Error refreshing token: {}", e);
+            log::error!("Error refreshing user token: {}", e);
             Err(Error::from(e))
         }
     }
 }
 
-pub async fn discover_storage(client: &reqwest::Client, auth_token: &str) -> Result<String, Error> {
+pub async fn discover_storage(
+    http_client: &reqwest::Client,
+    user_token: &str,
+) -> Result<String, Error> {
     log::info!("Discovering storage host");
     let discovery_request = vec![
         ("environment", "production"),
         ("group", GROUP_AUTH),
         ("apiVer", STORAGE_DISCOVERY_API_VERSION),
     ];
-    let response = client
+    let response = http_client
         .get(STORAGE_DISCOVERY_API_URL)
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .query(&discovery_request)
@@ -100,14 +106,14 @@ pub async fn discover_storage(client: &reqwest::Client, auth_token: &str) -> Res
 }
 
 pub async fn get_root_info(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     storage_url: &str,
-    auth_token: &str,
+    user_token: &str,
 ) -> Result<RootInfo, Error> {
     log::debug!("Fetching root info");
-    let response = client
+    let response = http_client
         .get(format!("{}/{}", storage_url, ROOT_SYNC_ENDPOINT))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header("Accept", "application/json")
         .header(HEADER_RM_FILENAME, "roothash")
         .send()
@@ -123,14 +129,14 @@ pub async fn get_root_info(
 }
 
 pub async fn upload_request(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     _: &str,
-    auth_token: &str,
+    user_token: &str,
 ) -> Result<String, Error> {
     log::info!("Requesting to upload a document to the rmCloud");
-    let response = client
+    let response = http_client
         .get(format!("{}/{}", WEBAPP_API_URL_ROOT, DOC_UPLOAD_ENDPOINT))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header("Accept", "application/json")
         .header(HEADER_RM_SOURCE, "WebLibrary")
         .header("Content-Type", "application/pdf")
@@ -153,18 +159,18 @@ pub async fn upload_request(
 }
 
 pub async fn upload_file(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     _: &str,
-    auth_token: &str,
+    user_token: &str,
     file: File,
 ) -> Result<String, Error> {
     log::info!("Requesting to upload a document to the rmCloud");
     let stream = FramedRead::new(file, BytesCodec::new());
     let body = Body::wrap_stream(stream);
 
-    let response = client
+    let response = http_client
         .post(format!("{}/{}", WEBAPP_API_URL_ROOT, DOC_UPLOAD_ENDPOINT))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header("Accept-Encoding", "gzip, deflate, br")
         .header(HEADER_RM_SOURCE, "WebLibrary")
         .header(HEADER_RM_META, "")
@@ -189,23 +195,23 @@ pub async fn upload_file(
 }
 
 pub async fn get_files(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     _storage_url: &str, // Ignored because Sync V4 needs internal host
-    auth_token: &str,
+    user_token: &str,
 ) -> Result<(Vec<crate::objects::Document>, String), Error> {
     log::info!("Requesting files version Sync V4");
 
     // 1. Get the root hash
-    let root_info = get_root_info(client, STORAGE_API_URL_ROOT, auth_token).await?;
+    let root_info = get_root_info(http_client, STORAGE_API_URL_ROOT, user_token).await?;
     let root_hash = root_info.hash;
 
     // 2. Fetch the root index blob
-    let root_blob_response = client
+    let root_blob_response = http_client
         .get(format!(
             "{}/sync/v3/files/{}",
             STORAGE_API_URL_ROOT, root_hash
         ))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header(HEADER_RM_FILENAME, "roothash")
         .send()
         .await?
@@ -236,11 +242,11 @@ pub async fn get_files(
 
     // 4. Concurrently fetch metadata for all entries
     let mut tasks = Vec::new();
-    let auth_token = auth_token.to_string();
-    let client = client.clone();
+    let user_token = user_token.to_string();
+    let client = http_client.clone();
 
     for entry in entries {
-        let auth_token = auth_token.clone();
+        let user_token = user_token.clone();
         let client = client.clone();
         tasks.push(tokio::spawn(async move {
             // Fetch .docSchema to find .metadata hash
@@ -249,7 +255,7 @@ pub async fn get_files(
                     "{}/sync/v3/files/{}",
                     STORAGE_API_URL_ROOT, entry.hash
                 ))
-                .bearer_auth(&auth_token)
+                .bearer_auth(&user_token)
                 .header(HEADER_RM_FILENAME, format!("{}.docSchema", entry.doc_id))
                 .send()
                 .await;
@@ -274,7 +280,7 @@ pub async fn get_files(
             let m_hash = metadata_hash?;
             let metadata_response = client
                 .get(format!("{}/sync/v3/files/{}", STORAGE_API_URL_ROOT, m_hash))
-                .bearer_auth(&auth_token)
+                .bearer_auth(&user_token)
                 .header(HEADER_RM_FILENAME, format!("{}.metadata", entry.doc_id))
                 .send()
                 .await
@@ -335,14 +341,14 @@ pub async fn get_files(
 }
 
 pub async fn fetch_blob(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     base_url: &str,
-    auth_token: &str,
+    user_token: &str,
     hash: &str,
 ) -> Result<Vec<u8>, Error> {
-    let response = client
+    let response = http_client
         .get(format!("{}/sync/v3/files/{}", base_url, hash))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .send()
         .await?
         .error_for_status()?;
@@ -352,9 +358,9 @@ pub async fn fetch_blob(
 }
 
 pub async fn upload_blob(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     base_url: &str,
-    auth_token: &str,
+    user_token: &str,
     hash: &str,
     filename: &str,
     data: &[u8],
@@ -365,9 +371,9 @@ pub async fn upload_blob(
     let content_md5 = base64::engine::general_purpose::STANDARD.encode(checksum_bytes);
     let hash_header_value = format!("crc32c={}", content_md5);
 
-    let response = client
+    let response = http_client
         .put(format!("{}/sync/v3/files/{}", base_url, hash))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header(HEADER_RM_FILENAME, filename)
         .header(HEADER_X_GOOG_HASH, hash_header_value)
         .header("Content-Type", content_type)
@@ -395,9 +401,9 @@ pub async fn upload_blob(
 }
 
 pub async fn update_root(
-    client: &reqwest::Client,
+    http_client: &reqwest::Client,
     base_url: &str,
-    auth_token: &str,
+    user_token: &str,
     hash: &str,
     generation: u64,
 ) -> Result<(), Error> {
@@ -407,9 +413,9 @@ pub async fn update_root(
         "broadcast": true
     });
 
-    client
+    http_client
         .put(format!("{}/{}", base_url, ROOT_SYNC_ENDPOINT))
-        .bearer_auth(auth_token)
+        .bearer_auth(user_token)
         .header("Content-Type", "application/json")
         .header(HEADER_RM_FILENAME, "roothash")
         .json(&body)
