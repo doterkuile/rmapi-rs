@@ -1,6 +1,7 @@
 use crate::constants::{
-    DOC_TYPE_DOCUMENT, MIME_TYPE_DOC_SCHEMA, MIME_TYPE_JSON, MIME_TYPE_OCTET_STREAM, MIME_TYPE_PDF,
-    MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT, TRASH_ID,
+    AUTH_API_URL_ROOT, DOC_TYPE_DOCUMENT, MIME_TYPE_DOC_SCHEMA, MIME_TYPE_JSON,
+    MIME_TYPE_OCTET_STREAM, MIME_TYPE_PDF, MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID,
+    STORAGE_API_URL_ROOT, TRASH_ID, WEBAPP_API_URL_ROOT,
 };
 use crate::endpoints::{
     fetch_blob, get_files, get_root_info, refresh_user_token, register_client, update_root,
@@ -23,45 +24,58 @@ pub struct RmClient {
     pub user_token: String,
     pub device_token: String,
     pub storage_url: String,
+    pub auth_url: String,
+    pub webapp_url: String,
     pub filesystem: FileSystem,
     pub http_client: reqwest::Client,
 }
 
 impl RmClient {
-    pub async fn new(device_token: &str, user_token: Option<&str>) -> Result<Self, Error> {
+    pub async fn new(
+        device_token: &str,
+        user_token: Option<&str>,
+        auth_url: Option<&str>,
+        storage_url: Option<&str>,
+        webapp_url: Option<&str>,
+    ) -> Result<Self, Error> {
         let filesystem = FileSystem::load_cache().unwrap_or_else(|e| {
             log::error!("Failed to load cache, creating new one. Error: {}", e);
             FileSystem::new()
         });
 
         let http_client = reqwest::Client::new();
+        let auth_url_val = auth_url.unwrap_or(AUTH_API_URL_ROOT);
 
         // Check if user token is provided, otherwise refresh
         let user_token = match user_token {
             Some(token) => token.to_owned(),
-            None => refresh_user_token(&http_client, device_token).await?,
+            None => refresh_user_token(&http_client, auth_url_val, device_token).await?,
         };
 
         Ok(Self {
             user_token,
             device_token: device_token.to_string(),
-            storage_url: STORAGE_API_URL_ROOT.to_string(),
+            storage_url: storage_url.unwrap_or(STORAGE_API_URL_ROOT).to_string(),
+            auth_url: auth_url_val.to_string(),
+            webapp_url: webapp_url.unwrap_or(WEBAPP_API_URL_ROOT).to_string(),
             filesystem,
             http_client,
         })
     }
 
-    pub async fn register_client(code: &str) -> Result<Self, Error> {
+    pub async fn register_client(code: &str, auth_url: Option<&str>) -> Result<Self, Error> {
         log::debug!("Registering client with reMarkable Cloud");
         let http_client = reqwest::Client::new();
-        let device_token = register_client(&http_client, code).await?;
-        let user_token = refresh_user_token(&http_client, &device_token).await?;
-        RmClient::new(&device_token, Some(&user_token)).await
+        let auth_url_val = auth_url.unwrap_or(AUTH_API_URL_ROOT);
+        let device_token = register_client(&http_client, auth_url_val, code).await?;
+        let user_token = refresh_user_token(&http_client, auth_url_val, &device_token).await?;
+        RmClient::new(&device_token, Some(&user_token), auth_url, None, None).await
     }
 
     pub async fn refresh_user_token(&mut self) -> Result<(), Error> {
         log::debug!("Refreshing auth token");
-        self.user_token = refresh_user_token(&self.http_client, &self.device_token).await?;
+        self.user_token =
+            refresh_user_token(&self.http_client, &self.auth_url, &self.device_token).await?;
         Ok(())
     }
 
