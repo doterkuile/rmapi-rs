@@ -80,8 +80,13 @@ impl RmClient {
             return Ok(self.filesystem.get_all_documents());
         }
 
-        let (docs, hash) =
-            get_files(&self.http_client, &self.storage_url, &self.user_token).await?;
+        let (docs, hash) = get_files(
+            &self.http_client,
+            &self.storage_url,
+            &self.user_token,
+            &self.filesystem.get_all_documents(),
+        )
+        .await?;
         self.filesystem.save_cache(&hash, &docs)?;
         Ok(docs)
     }
@@ -363,7 +368,7 @@ impl RmClient {
     }
 
     fn resolve_parent_id_for_index(&self, parent_id: &str) -> String {
-        if parent_id == Uuid::nil().to_string() || parent_id.is_empty() {
+        if parent_id == Uuid::nil().to_string() || parent_id == "" {
             ROOT_ID.to_string()
         } else if parent_id == TRASH_ID {
             "trash".to_string()
@@ -519,14 +524,36 @@ impl RmClient {
         let doc_id_str = doc_id.to_string();
         log::info!("Downloading document: {}", doc_id_str);
 
-        // 1 & 2. Fetch root index
-        let (_, _, root_entries) = self.fetch_root_index().await?;
-
-        let entry_hash = root_entries
+        // Check if we have the document and its hash in our cache
+        let entry_hash = if let Some(doc) = self
+            .filesystem
+            .get_all_documents()
             .iter()
-            .find(|e| e.id == doc_id_str)
-            .map(|e| e.hash.clone())
-            .ok_or_else(|| Error::Message("Document not found in root index".to_string()))?;
+            .find(|d| d.id.to_string() == doc_id_str)
+        {
+            if !doc.hash.is_empty() {
+                log::info!("Using cached hash for document {}", doc_id_str);
+                doc.hash.clone()
+            } else {
+                // Fallback to fetching root index if hash is missing
+                log::info!("Hash missing in cache, fetching root index");
+                let (_, _, root_entries) = self.fetch_root_index().await?;
+                root_entries
+                    .iter()
+                    .find(|e| e.id == doc_id_str)
+                    .map(|e| e.hash.clone())
+                    .ok_or_else(|| Error::Message("Document not found in root index".to_string()))?
+            }
+        } else {
+            // Fallback if document not in cache at all
+            log::info!("Document not in cache, fetching root index");
+            let (_, _, root_entries) = self.fetch_root_index().await?;
+            root_entries
+                .iter()
+                .find(|e| e.id == doc_id_str)
+                .map(|e| e.hash.clone())
+                .ok_or_else(|| Error::Message("Document not found in root index".to_string()))?
+        };
 
         // 4 & 5. Fetch docSchema and parse
         let subfiles_entries = self.fetch_doc_schema(&entry_hash).await?;
