@@ -3,7 +3,8 @@ use crate::constants::{
     MSG_UNKNOWN_COUNT_0, MSG_UNKNOWN_COUNT_4, ROOT_ID, STORAGE_API_URL_ROOT, TRASH_ID,
 };
 use crate::endpoints::{
-    fetch_blob, get_files, get_root_info, refresh_token, register_client, update_root, upload_blob,
+    fetch_blob, get_files, get_root_info, refresh_user_token, register_client, update_root,
+    upload_blob,
 };
 use crate::error::Error;
 use crate::filesystem::FileSystem;
@@ -16,42 +17,48 @@ use uuid::Uuid;
 use zip;
 
 pub struct RmClient {
-    pub auth_token: String,
-    pub device_token: Option<String>,
+    pub user_token: String,
+    pub device_token: String,
     pub storage_url: String,
     pub filesystem: FileSystem,
     pub http_client: reqwest::Client,
 }
 
 impl RmClient {
-    pub async fn from_token(auth_token: &str, device_token: Option<String>) -> Result<Self, Error> {
-        log::debug!("New client with auth token");
+    pub async fn new(device_token: &str, user_token: Option<&str>) -> Result<Self, Error> {
         let filesystem = FileSystem::load_cache().unwrap_or_else(|e| {
             log::error!("Failed to load cache, creating new one. Error: {}", e);
             FileSystem::new()
         });
-        Ok(RmClient {
-            auth_token: auth_token.to_string(),
-            device_token,
+
+        let http_client = reqwest::Client::new();
+
+        // Check if user token is provided, otherwise refresh
+        let user_token = match user_token {
+            Some(token) => token.to_owned(),
+            None => refresh_user_token(&http_client, device_token).await?,
+        };
+
+        Ok(Self {
+            user_token,
+            device_token: device_token.to_string(),
             storage_url: STORAGE_API_URL_ROOT.to_string(),
             filesystem,
-            http_client: reqwest::Client::new(),
+            http_client,
         })
     }
 
-    pub async fn new(code: &str) -> Result<Self, Error> {
+    pub async fn register_client(code: &str) -> Result<Self, Error> {
         log::debug!("Registering client with reMarkable Cloud");
         let http_client = reqwest::Client::new();
         let device_token = register_client(&http_client, code).await?;
-        let user_token = refresh_token(&http_client, &device_token).await?;
-        RmClient::from_token(&user_token, Some(device_token)).await
+        let user_token = refresh_user_token(&http_client, &device_token).await?;
+        RmClient::new(&device_token, Some(&user_token)).await
     }
 
-    pub async fn refresh_token(&mut self) -> Result<(), Error> {
+    pub async fn refresh_user_token(&mut self) -> Result<(), Error> {
         log::debug!("Refreshing auth token");
-        let token_to_use = self.device_token.as_ref().unwrap_or(&self.auth_token);
-        let new_token = refresh_token(&self.http_client, token_to_use).await?;
-        self.auth_token = new_token;
+        self.user_token = refresh_user_token(&self.http_client, &self.device_token).await?;
         Ok(())
     }
 
@@ -63,7 +70,7 @@ impl RmClient {
     pub async fn list_files(&mut self) -> Result<Vec<Document>, Error> {
         // 1. Get the remote root hash
         let root_info =
-            get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+            get_root_info(&self.http_client, &self.storage_url, &self.user_token).await?;
         let remote_hash = root_info.hash;
         if remote_hash == self.filesystem.current_hash {
             log::debug!("Cache unchanged, using local tree");
@@ -71,7 +78,7 @@ impl RmClient {
         }
 
         let (docs, hash) =
-            get_files(&self.http_client, &self.storage_url, &self.auth_token).await?;
+            get_files(&self.http_client, &self.storage_url, &self.user_token).await?;
         self.filesystem.save_cache(&hash, &docs)?;
         Ok(docs)
     }
@@ -227,14 +234,14 @@ impl RmClient {
 
     async fn fetch_root_index(&self) -> Result<(String, u64, Vec<IndexEntry>), Error> {
         let root_info =
-            get_root_info(&self.http_client, &self.storage_url, &self.auth_token).await?;
+            get_root_info(&self.http_client, &self.storage_url, &self.user_token).await?;
         let root_hash = root_info.hash;
         let generation = root_info.generation;
 
         let root_blob = fetch_blob(
             &self.http_client,
             &self.storage_url,
-            &self.auth_token,
+            &self.user_token,
             &root_hash,
         )
         .await?;
@@ -251,7 +258,7 @@ impl RmClient {
 
     async fn fetch_doc_schema(&self, hash: &str) -> Result<Vec<IndexEntry>, Error> {
         let doc_schema_bytes =
-            fetch_blob(&self.http_client, &self.storage_url, &self.auth_token, hash).await?;
+            fetch_blob(&self.http_client, &self.storage_url, &self.user_token, hash).await?;
         let doc_schema_content = String::from_utf8(doc_schema_bytes)?;
 
         doc_schema_content
@@ -311,7 +318,7 @@ impl RmClient {
         upload_blob(
             &self.http_client,
             &self.storage_url,
-            &self.auth_token,
+            &self.user_token,
             &new_root_hash,
             "root.docSchema",
             new_root_bytes.as_slice(),
@@ -322,7 +329,7 @@ impl RmClient {
         update_root(
             &self.http_client,
             &self.storage_url,
-            &self.auth_token,
+            &self.user_token,
             &new_root_hash,
             generation,
         )
@@ -413,7 +420,7 @@ impl RmClient {
         let metadata_bytes = fetch_blob(
             &self.http_client,
             &self.storage_url,
-            &self.auth_token,
+            &self.user_token,
             &metadata_entry.hash,
         )
         .await?;
@@ -492,7 +499,7 @@ impl RmClient {
         upload_blob(
             &self.http_client,
             &self.storage_url,
-            &self.auth_token,
+            &self.user_token,
             hash,
             &format!("{}.{}", uuid, ext),
             data,
@@ -539,7 +546,7 @@ impl RmClient {
             log::info!("Downloading single file to {:?}", output_path);
 
             let data =
-                fetch_blob(&self.http_client, &self.storage_url, &self.auth_token, hash).await?;
+                fetch_blob(&self.http_client, &self.storage_url, &self.user_token, hash).await?;
             tokio::fs::write(&output_path, data).await?;
             Ok(output_path)
         } else {
@@ -549,7 +556,7 @@ impl RmClient {
             // Fetch all blobs
             let mut blob_data = Vec::new();
             for (hash, name) in &subfiles {
-                let data = fetch_blob(&self.http_client, &self.storage_url, &self.auth_token, hash)
+                let data = fetch_blob(&self.http_client, &self.storage_url, &self.user_token, hash)
                     .await?;
                 blob_data.push((name.clone(), data));
             }
