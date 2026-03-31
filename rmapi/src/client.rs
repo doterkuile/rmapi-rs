@@ -10,6 +10,7 @@ use crate::error::Error;
 use crate::filesystem::FileSystem;
 use crate::objects::{Document, ExtraMetadata, IndexEntry, V4Content, V4Metadata};
 use chrono::Utc;
+use futures::stream::{self, StreamExt};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::str::FromStr;
@@ -611,7 +612,13 @@ impl RmClient {
                     .values()
                     .map(|child| self.download_entry(child, new_dir.clone(), true))
                     .collect::<Result<Vec<_>, _>>()?;
-                futures::future::try_join_all(futures).await?;
+
+                stream::iter(futures)
+                    .buffer_unordered(10)
+                    .collect::<Vec<Result<(), Error>>>()
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<()>, Error>>()?;
             } else {
                 let target_base = target_path.join(node.name());
                 self.download_document(&node.document.id, &target_base)

@@ -6,6 +6,7 @@ use crate::constants::{
 use crate::error::Error;
 use crate::objects::{ClientRegistration, RootInfo, StorageInfo, V4Entry, V4Metadata};
 use base64::Engine;
+use futures::stream::{self, StreamExt};
 use log;
 use reqwest::{self, Body};
 
@@ -241,101 +242,97 @@ pub async fn get_files(
     }
 
     // 4. Concurrently fetch metadata for all entries
-    let mut tasks = Vec::new();
     let user_token = user_token.to_string();
     let client = http_client.clone();
 
-    for entry in entries {
-        let user_token = user_token.clone();
-        let client = client.clone();
-        tasks.push(tokio::spawn(async move {
-            // Fetch .docSchema to find .metadata hash
-            let doc_schema_response = client
-                .get(format!(
-                    "{}/sync/v3/files/{}",
-                    STORAGE_API_URL_ROOT, entry.hash
-                ))
-                .bearer_auth(&user_token)
-                .header(HEADER_RM_FILENAME, format!("{}.docSchema", entry.doc_id))
-                .send()
-                .await;
+    let documents = stream::iter(entries)
+        .map(|entry| {
+            let user_token = user_token.clone();
+            let client = client.clone();
+            async move {
+                // Fetch .docSchema to find .metadata hash
+                let doc_schema_response = client
+                    .get(format!(
+                        "{}/sync/v3/files/{}",
+                        STORAGE_API_URL_ROOT, entry.hash
+                    ))
+                    .bearer_auth(&user_token)
+                    .header(HEADER_RM_FILENAME, format!("{}.docSchema", entry.doc_id))
+                    .send()
+                    .await;
 
-            let doc_schema_response = match doc_schema_response {
-                Ok(r) if r.status().is_success() => r,
-                _ => return None,
-            };
+                let doc_schema_response = match doc_schema_response {
+                    Ok(r) if r.status().is_success() => r,
+                    _ => return None,
+                };
 
-            let doc_schema_text = doc_schema_response.text().await.ok()?;
-            let mut metadata_hash = None;
-            for subline in doc_schema_text.lines().skip(1) {
-                if subline.contains(".metadata") {
-                    let subparts: Vec<&str> = subline.split(':').collect();
-                    if !subparts.is_empty() {
-                        metadata_hash = Some(subparts[0].to_string());
-                        break;
+                let doc_schema_text = doc_schema_response.text().await.ok()?;
+                let mut metadata_hash = None;
+                for subline in doc_schema_text.lines().skip(1) {
+                    if subline.contains(".metadata") {
+                        let subparts: Vec<&str> = subline.split(':').collect();
+                        if !subparts.is_empty() {
+                            metadata_hash = Some(subparts[0].to_string());
+                            break;
+                        }
                     }
                 }
+
+                let m_hash = metadata_hash?;
+                let metadata_response = client
+                    .get(format!("{}/sync/v3/files/{}", STORAGE_API_URL_ROOT, m_hash))
+                    .bearer_auth(&user_token)
+                    .header(HEADER_RM_FILENAME, format!("{}.metadata", entry.doc_id))
+                    .send()
+                    .await
+                    .ok()?;
+
+                if !metadata_response.status().is_success() {
+                    return None;
+                }
+
+                let m_body = metadata_response.text().await.ok()?;
+                let metadata_json: V4Metadata = serde_json::from_str(&m_body).ok()?;
+                if metadata_json.deleted {
+                    return None;
+                }
+
+                let last_modified = metadata_json
+                    .last_modified
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .unwrap_or_default();
+
+                Some(crate::objects::Document {
+                    id: Uuid::parse_str(&entry.doc_id).unwrap_or(Uuid::nil()),
+                    version: metadata_json.version,
+                    message: String::new(),
+                    success: true,
+                    blob_url_get: String::new(),
+                    blob_url_put: String::new(),
+                    blob_url_put_expires: chrono::Utc::now(),
+                    last_modified,
+                    doc_type: if metadata_json.doc_type == "CollectionType" {
+                        crate::objects::DocumentType::Collection
+                    } else {
+                        crate::objects::DocumentType::Document
+                    },
+                    display_name: if metadata_json.visible_name.is_empty() {
+                        "Unknown".to_string()
+                    } else {
+                        metadata_json.visible_name
+                    },
+                    current_page: 0,
+                    bookmarked: metadata_json.pinned,
+                    parent: metadata_json.parent,
+                })
             }
-
-            let m_hash = metadata_hash?;
-            let metadata_response = client
-                .get(format!("{}/sync/v3/files/{}", STORAGE_API_URL_ROOT, m_hash))
-                .bearer_auth(&user_token)
-                .header(HEADER_RM_FILENAME, format!("{}.metadata", entry.doc_id))
-                .send()
-                .await
-                .ok()?;
-
-            if !metadata_response.status().is_success() {
-                return None;
-            }
-
-            let m_body = metadata_response.text().await.ok()?;
-            let metadata_json: V4Metadata = serde_json::from_str(&m_body).ok()?;
-            if metadata_json.deleted {
-                return None;
-            }
-
-            let last_modified = metadata_json
-                .last_modified
-                .parse::<i64>()
-                .ok()
-                .and_then(chrono::DateTime::from_timestamp_millis)
-                .unwrap_or_default();
-
-            Some(crate::objects::Document {
-                id: Uuid::parse_str(&entry.doc_id).unwrap_or(Uuid::nil()),
-                version: metadata_json.version,
-                message: String::new(),
-                success: true,
-                blob_url_get: String::new(),
-                blob_url_put: String::new(),
-                blob_url_put_expires: chrono::Utc::now(),
-                last_modified,
-                doc_type: if metadata_json.doc_type == "CollectionType" {
-                    crate::objects::DocumentType::Collection
-                } else {
-                    crate::objects::DocumentType::Document
-                },
-                display_name: if metadata_json.visible_name.is_empty() {
-                    "Unknown".to_string()
-                } else {
-                    metadata_json.visible_name
-                },
-                current_page: 0,
-                bookmarked: metadata_json.pinned,
-                parent: metadata_json.parent,
-            })
-        }));
-    }
-
-    let results = futures::future::join_all(tasks).await;
-    let mut documents = Vec::new();
-    for res in results {
-        if let Ok(Some(doc)) = res {
-            documents.push(doc);
-        }
-    }
+        })
+        .buffer_unordered(50)
+        .filter_map(|res| async move { res })
+        .collect::<Vec<_>>()
+        .await;
 
     Ok((documents, root_hash))
 }
